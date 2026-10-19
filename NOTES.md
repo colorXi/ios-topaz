@@ -2,6 +2,39 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 🎯🎯 CIVI 2026-10-19 22:00: QEMU LOCATES THE HANG (startup sequence completes, bsd_init never runs) <<<
+
+**The QEMU smoke test is a better instrument than a phone photo.** `tools/qemu-sweet.py` boots the Civi kernel and *decodes the framebuffer to text* (`fb.txt`), so the whole console is readable instead of 45 OCR'd lines. The Civi console lives at `0x0e1000000` (not sweet's `0x9c000000`), so `qemu-sweet.py` now honours `SWEET_FB_BASE` from the environment. QEMU reproduces the phone's stop **exactly** (same last line, `kdp_core zlib memory 0x8000`).
+
+**What the guest's memory says (read with HMP `xp` over QMP):**
+
+```
+_startup_entry_cur = 0xfffffe0007ca0c50
+__init_entry_set   = 0xfffffe0007c88e30  size 0x17e20   (4076 entries)
+                     -> the cursor is exactly one past the end
+_startup_phase     = 0xffffffff
+```
+
+* **All 4076 startup entries ran.** `startup_entry_cur` points one past the end of the table.
+* **`startup_phase == 0xffffffff` is the fingerprint of `kernel_startup_initialize_upto(STARTUP_SUB_LOCKDOWN)` at `osfmk/kern/startup.c:747`** -- that call sets `startup_phase = upto` (startup.c:419), and `STARTUP_SUB_LOCKDOWN == ~0u`. So line 747 was reached *and returned*.
+* The console's last message comes from **`kdp_init()` at startup.c:655** (`out_zlib.o` / `debug.o`).
+* **`bsd_init()` (startup.c:790) never ran** -- none of the 47 `bsd_init:` markers printed.
+* The CPU sits in `processor_idle` taking timer IRQs (`_processor_idle+0x148`, `_machine_idle+0xfc`), i.e. the scheduler is up and the bootstrap thread is *blocked*, not spinning.
+
+**So the hang is between startup.c:747 and startup.c:790.** The candidate calls in that window: `OSKextRemoveKextBootstrap`, `machine_lockdown`, `kernel_do_post` (XNUPOST), `PE_lockdown_iokit`, `vm_set_restrictions`, `kperf_init_early`, `bsd_init`. Stage **0086** (commit `8b57b33`, CI run `39259893538`) inserts a marker *after* each of those calls plus along the earlier path, so the last marker that appears names the last step that returned and the step after it is the one that hangs.
+
+**The XNU per-function startup trace exists but does not print.** `kernel_startup_initialize_upto()` already prints one line per entry before calling it (`kprintf("%s[%d, rank %d]: %p(%p)\n", ...)`) -- exactly the trace wanted. Stage 0085 forces `STARTUP_DEBUG_VERBOSE` on, and the disassembly confirms the `startup_debug` term was optimised away, leaving `if (startup_phase >= STARTUP_SUB_KPRINTF)`. That condition reads `startup_phase` **before** the loop updates it, and `_startup_phase` reads 0xffffffff in the guest -- so the branch should be taken, yet not one trace line appears. **Unresolved**: either the kprintf output is lost (the console may not scroll, so an early flood would be invisible) or `startup_phase` is not really what we think. The 0086 markers sidestep this.
+
+**How the startup table was decoded (no source needed).** The kernel image is a Mach-O 64 LE executable. `STARTUP_HOOK_SECTION` is `__init_entry_set` (startup.h:148/160), holding `struct startup_entry { subsystem, rank, func, arg }` = 24 bytes. 4076 entries in **linker** order; `qsort` sorts them at boot by (subsystem, rank). The MACH_IPC phase (subsystem 13) has 43 entries; `_ipc_importance_init` and `_ipc_init` carry rank `0xffffffff` so they run *after* every rank-0 entry. `_mig_init` (rank 0) prints `mig_table_max_displ = 54 mach_kobj_count = 374`, and `_ipc_init` (rank 0xffffffff) is in `osfmk/ipc/ipc_init.c` -- the 0084 marker is confirmed present in the compiled object (`_ipc_init`'s 3rd instruction is `bl _kprintf`).
+
+**Earlier conclusions that this supersedes / corrects:**
+* "hangs inside `ipc_init()`" -- **wrong**. `ipc_init()` is never reached; the whole startup sequence completes.
+* "the Mach IPC phase hangs" -- **wrong**; the MACH_IPC phase finished.
+* "hangs in the root-device path" (the v3 milestone reading) -- **wrong**; `bsd_init()` never ran, so no root device was ever probed.
+* `startup_debug=0x1` on the cmdline is **not** parsed as 1 (no `kernel_bootstrap:` phase markers ever appeared). `PE_parse_boot_argn` lives in `osfmk/kern/pexpert.c`; the exact path is still to be confirmed.
+
+**Root filesystem status.** All three APFS volumes mount read-only with a locally built `apfs-fuse` (sgan81/apfs-fuse; needs the `3rdparty/lzfse` submodule, `-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CXX_FLAGS="-include cstdint"`, and `libbz2-dev`). WSL2 has **no `hfsplus` kernel module** and apt's `hfsplus` package is for *classic* HFS (`hpcopy`/`hpls`), so **nothing here can write an HFS+ volume**. `hfsprogs` (`mkfs.hfsplus`, `fsck.hfsplus`) and `img2simg`/`simg2img` are installed. The route being used: a QEMU Linux VM (Ubuntu 24.04 cloud image, its kernel has hfsplus) with the APFS trees handed over as `mke2fs -d` ext4 images -- `mke2fs -d` was verified to preserve symlinks (mode 120777), hard links (shared inode) and uid/gid (272:272). The sweet machine's finished image (`ios16-root-20H392-v9.img`, 12.1 GB `.simg`, flashed 2026-10-17) is on an external SSD that is **not** attached to this PC; if the user can plug it in, steps B2-B5 disappear.
+
 ### >>> 🎯 CIVI 2026-10-19 21:00: HANG IS BEFORE ipc_init(); startup_debug WAS SILENTLY 0 <<<
 
 **Where the boot stops, measured on the real phone (image `civi-v11.img`, 16,769,024 bytes, SHA256 `85451228d6f12f5345cf6e96ed06c4f37d2cf5a22a841ce02f9a9fe20208a615`, kernel sha256 `a70232671e2221b10e2a1a22bd12fb0202b8e069d454e36202a085a20d3e5237`, CI run `39252150791`, commit `94a494e`).** The visible console ends with exactly the same span as the v10 run, so nothing scrolled off:
