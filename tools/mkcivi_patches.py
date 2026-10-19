@@ -72,12 +72,14 @@ def main():
     n = 0
     for f in sorted(os.listdir(SRC)):
         m = re.match(r'^(\d{4})-', f)
-        if not m or f.endswith('.sh'):
+        if not m or int(m.group(1)) > BASE_LAST:
             continue
-        if int(m.group(1)) <= BASE_LAST:
-            shutil.copyfile(os.path.join(SRC, f), os.path.join(DST, f))
-            n += 1
-    print(f'  copied {n} base patches (0001-{BASE_LAST:04d})')
+        # .patch AND the .sh stage scripts (0019/0020/0026) -- blacktop's
+        # build.sh runs the stage scripts by name, so they must come along or
+        # the "Fetch build script" step fails on a non-matching glob.
+        shutil.copyfile(os.path.join(SRC, f), os.path.join(DST, f))
+        n += 1
+    print(f'  copied {n} base files (0001-{BASE_LAST:04d}, patches + stage scripts)')
 
     for src, reps, name in PATCHES:
         text = open(os.path.join(SRC, src), encoding='utf-8').read()
