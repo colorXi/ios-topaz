@@ -62,6 +62,17 @@ jobs:
           ls xnu/patches-civi | tail -3
           grep -n "0x81000000" xnu/patches-civi/0081-civi-boot-cpu-mpidr.patch | head -3
           grep -c "mcpu=cortex-a53\|ldaxr\|casa" xnu/patches-civi/*.patch || true
+          # civi: sweet's splash framebuffer 0x9c000000 is NOT RAM on Civi
+          # (System RAM starts at 0xdff00000), so patches 0010/0012 must have
+          # been rewritten to 0x0e1000000 or the phone data-aborts on the very
+          # first pixel XNU draws and the boot looks like nothing happened.
+          if grep -rn "0x9c000000" xnu/patches-civi/ ; then
+            echo "::error::sweet's framebuffer address 0x9c000000 survived into patches-civi"
+            exit 1
+          fi
+          echo "framebuffer address check: clean"
+          grep -c "0x0e1000000" xnu/patches-civi/0010-sweet-early-framebuffer-debug.patch \
+                                  xnu/patches-civi/0012-sweet-keep-debug-console-after-ttbr0.patch
 
       - name: Fetch build script
         run: |
