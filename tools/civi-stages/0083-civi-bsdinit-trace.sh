@@ -1,8 +1,8 @@
 #!/bin/bash
 # civi: turn on XNU's own bsd_init() tracing.
 #
-# bsd/kern/init.c carries a complete step-by-step trace of bsd_init() behind
-# DEBUG_BSDINIT, but it ships disabled:
+# bsd/kern/bsd_init.c carries a complete step-by-step trace of bsd_init()
+# (47 markers) behind DEBUG_BSDINIT, but it ships disabled:
 #
 #     #define DEBUG_BSDINIT 0
 #     #if DEBUG_BSDINIT
@@ -17,6 +17,8 @@
 # either never reached or dies early inside it.  This turns on XNU's own
 # markers, which is far more informative than hand-written printfs and cannot
 # drift: it is a compile-time constant in one source file.
+#
+# NB: the file is bsd/kern/bsd_init.c in xnu-8796, not bsd/kern/init.c.
 #
 # Also worth knowing from that same file: bsd_init() wraps the root mount in
 #
@@ -37,10 +39,12 @@ set -euo pipefail
 python3 - <<'PY'
 from pathlib import Path
 
-path = Path('bsd/kern/init.c')
-text = path.read_text()
+path = Path('bsd/kern/bsd_init.c')
 old = '#define DEBUG_BSDINIT 0'
 new = '#define DEBUG_BSDINIT 1'
+if not path.exists():
+    raise SystemExit(f'{path} does not exist')
+text = path.read_text()
 if text.count(old) != 1:
     if text.count(new) == 1:
         print('civi: DEBUG_BSDINIT already 1')
