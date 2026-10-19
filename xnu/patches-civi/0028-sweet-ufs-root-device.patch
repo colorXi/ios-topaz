@@ -500,10 +500,8 @@ new file mode 100644
 +
 +static int
 +sweet_ufs_init(void)
-+/* civi bisect */
-+{ printf("SWEET UFS: [1] sweet_ufs_init entered\n"); }
 +{
-+	DTEntry node;
++	DTEntry node; printf("SWEET UFS: [1] sweet_ufs_init entered\n");
 +	uintptr_t const *reg = NULL;
 +	unsigned int size = 0;
 +	char want[64] = "userdata";
@@ -515,11 +513,9 @@ new file mode 100644
 +		printf("SWEET UFS: no /sweet-ufs node in the device tree\n");
 +		return ENXIO;
 +	}
-+	printf("SWEET UFS: [2] DT node ok, want=%s\n", want);
-+	PE_parse_boot_argn("ufsroot", want, sizeof(want));
++	printf("SWEET UFS: [2] DT node ok, want=%s\n", want); PE_parse_boot_argn("ufsroot", want, sizeof(want));
 +
-+	su.regs = ml_io_map(reg[0], reg[1]);
-+	printf("SWEET UFS: [3] regs=%p (dt pa 0x%llx size 0x%x)\n", su.regs, (unsigned long long)reg[0], size);
++	su.regs = ml_io_map(reg[0], reg[1]); printf("SWEET UFS: [3] regs=%p dt_pa=0x%llx size=0x%x\n", (void *)su.regs, (unsigned long long)reg[0], size);
 +	if (kmem_alloc_contig(kernel_map, &su.dma, DMA_SIZE, PAGE_MASK, 0, 0,
 +	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 +		printf("SWEET UFS: no contiguous DMA memory\n");
@@ -529,15 +525,12 @@ new file mode 100644
 +	if (!pn) {
 +		return ENOMEM;
 +	}
-+	su.dma_pa = ptoa_64(pn);
-+	printf("SWEET UFS: [4] dma=%p pa 0x%llx lun %u secsize %u\n", su.dma, (unsigned long long)su.dma_pa, su.lun, su.secsize);
++	su.dma_pa = ptoa_64(pn); printf("SWEET UFS: [4] dma=%p pa=0x%llx lun=%u secsize=%u\n", (void *)su.dma, (unsigned long long)su.dma_pa, su.lun, su.secsize);
 +	su.lun = 0;
 +	su.secsize = DEV_BSIZE;
 +
 +	lck_mtx_lock(&sweet_ufs_lock);
-+	printf("SWEET UFS: [5] ufs_take_over_host...\n");
-+	error = ufs_take_over_host();
-+	printf("SWEET UFS: [6] ufs_take_over_host -> %d\n", error);
++	printf("SWEET UFS: [5] ufs_take_over_host...\n"); error = ufs_take_over_host(); printf("SWEET UFS: [6] ufs_take_over_host -> %d\n", error);
 +	if (!error) {
 +		static const uint8_t tur[6] = { 0x00 };
 +		/* The first command after the bootloader may report a unit attention. */
@@ -576,8 +569,7 @@ new file mode 100644
 +sweet_ufs_rootdev(dev_t *dev)
 +{
 +	if (!su.ready) {
-+		printf("SWEET UFS: [0] sweet_ufs_rootdev called\n");
-+		int error = sweet_ufs_init();
++		printf("SWEET UFS: [0] sweet_ufs_rootdev called\n"); int error = sweet_ufs_init();
 +		if (error) {
 +			return error;
 +		}
