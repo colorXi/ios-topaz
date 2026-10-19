@@ -56,7 +56,45 @@ bash /mnt/c/Users/BUFF/ios-civi/repack.sh "<cmdline>" <outname> [adt-path]
 ```
 `civi-cpu1.img` (SHA256 `7db6b8161271888cba4b1f06f84d00aaf5715208b94f05f39e544a9d95e4d5f1`) is the 8-node ADT with `cpus=1`, queued next.
 
-### >>> CIVI 2026-10-19 ROOT CAUSE FOUND: SWEET'S FRAMEBUFFER ADDRESS IS HARDCODED IN THE KERNEL PATCHES <<<
+### >>> 🎉🎉 MILESTONE 2026-10-19 18:45: XNU FULLY BOOTS ON THE CIVI (hangs later, in the root-device path) <<<
+
+**The Civi port now boots XNU to a fully initialised kernel.** Image `C:\Users\BUFF\ios-civi\civi-v3.img` (SHA256 `2a57ab6a9d296e3082b9c73a799b96fbfa7390a2fd226d7e036db89d57cc7932`), kernel from CI run **`39238078629`** (commit `9d07a6a`, kernel sha256 `c37c486610525db408835801c79f3e91de478022b7303feeff42c77660fc3c5b`). Panel, all of it on the real phone:
+
+```
+SWEET AMFI: built-in interface registered (XML entitlements)
+Security policy loaded: Guarded node policy (vnguard)
+SWEET: trust caches unavailable (Image4/AMFI not installed)
+keepsyms boot arg specified; keeping linkedit segment for symbols.
+SWEET: starting device-tree platform expert / platform expert registered
+SWEET AKS: AppleKeyStore registered (no passcode, unlocked)
+SWEET WDT: IOWatchdog registered (accepts check-ins, never fires)
+SWEET SURF: ICoreSurfaceRoot registered
+SWEET HID: buttons registered (test every 8 s) / HID: touch registered
+SWEET BATTERY: static fallback, 100% 4200mV external=1 charging=0
+SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0xe1000000, default surface 1,
+           presented as 1125x2436
+zone_init: pgzalloc [52 slots] / map VM RO GEN0 GEN1 GEN2 GEN3 DATA metadata metabits
+VM bootstrap done: 85 maps, 165 entries and 502 holes left
+Registered coredump handler for kernel
+Serial requested ... Initializing serial KDP
+ulock_initialize: thread_max=2560, ull_hash_buckets=1024
+SWEET PRNG: HMAC-SHA256 registered
+SWEET pthread: Libpthread-514.100.2 registered
+KLT IOMD setownership ENABLED
+"... subsystem is initialized"          <- LAST LINE, then the console stops
+```
+
+**Confirmed working on Civi: 8-core SMP with XNU's MPIDR check, the splash framebuffer as AppleCLCD, AMFI/vnguard, AppleKeyStore, IOWatchdog, IOSurface root, HID buttons + touch, battery, the whole zone/VM setup, ulock, the PRNG, Libpthread, the coredump handler and serial-KDP init.** The two porting bugs below were what stood between this and total silence.
+
+**Where it stops:** after `"... subsystem is initialized`, with **no `SWEET UFS:` line at all**, i.e. before `sweet_ufs_init()` prints. Everything before the root device works. `-enable_kprintf_spam` (image `civi-v4.log`) got strictly further than without it, so the stop is not caused by missing output.
+
+**Known traps for the next step:**
+- `sweetusb=2` cannot help yet: `ud_log_thread` is started from `sweet_usb_gadget_start()` inside `sweet_ufs_init()`, and patch 0080 gates `sweet_usb_probe()` behind `sweethw=1`. If the UFS driver is what hangs, the USB live log is circular. (`C:\Users\BUFF\ios-civi\listen-usblog.ps1` is ready for when it is not.)
+- patch 0047's persistent console ring also lives in `bsd/dev/sweet_ufs.c`, so it has the same dependency.
+- A heartbeat print around `bsd_init` in a stage script would pin the exact call, at the cost of one CI cycle.
+- `C:\Users\BUFF\ios-civi\civi-v6-cpu1.log` is `cpus=1` + kprintf_spam, to test whether the hang is SMP-related.
+
+### >>> CIVI 2026-10-19 ROOT CAUSES: hardcoded framebuffer, 32-bit phys_id, EL1 CNTP_CTL_EL0 <<<
 
 **Why every phone boot looked like "nothing happened".** `xnu/patches-civi/0010-sweet-early-framebuffer-debug.patch` and `0012-sweet-keep-debug-console-after-ttbr0.patch` hardcode **sweet's splash framebuffer physical address `0x9c000000`** in five places:
 
