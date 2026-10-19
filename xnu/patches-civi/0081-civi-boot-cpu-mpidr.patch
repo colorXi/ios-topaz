@@ -11,10 +11,10 @@ index 1724396..96c557b 100644
 -		panic("SWEET CPU: expected boot MPIDR 0 and logical CPU 0");
 +	/*
 +	 * civi: the ADT lists all eight cores and the shim boots xnu
-+	 * on CPU 0 (MPIDR 0x81000000, a Cortex-A55 with a 16K granule).
++	 * on CPU 0 (a Cortex-A55 with a 16K granule; Aff1:Aff0 phys_id 0).
 +	 */
-+	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0x81000000U) {
-+		panic("SWEET CPU: expected boot MPIDR 0x81000000 and logical CPU 0, got 0x%x/%u",
++	if (topology->boot_cpu->cpu_id != 0 || topology->boot_cpu->phys_id != 0) {
++		panic("SWEET CPU: expected boot phys_id 0 and logical CPU 0, got 0x%x/%u",
 +		    topology->boot_cpu->phys_id, topology->boot_cpu->cpu_id);
  	}
  	for (unsigned int i = 0; i < topology->num_cpus; i++) {

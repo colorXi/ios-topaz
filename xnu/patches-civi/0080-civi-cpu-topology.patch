@@ -38,8 +38,8 @@ index 2545cf9..1724396 100644
  	}
 -	/* MPIDR Aff1 = core: 0x000-0x500 A55, 0x600/0x700 A76 */
 -	if (cpu->phys_id > 0x700 || (cpu->phys_id & 0xff) != 0 ||
-+	/* topaz (SM6225): MPIDR Aff1 = cluster, Aff0 = core: 0x0-0x3 A53, 0x100-0x103 A73 */
-+	if ((cpu->phys_id & ~0x7ffU) != 0x81000000U ||
++	/* civi (SM7325): XNU phys_id is MPIDR Aff1:Aff0 only -> core << 8 */
++	if ((cpu->phys_id & ~0xff00U) != 0 || (cpu->phys_id & 0xffU) != 0 ||
  	    topology->num_cpus > SWEET_SMP_MAX_CPUS) {
  		panic("SWEET CPU: invalid topology cpu=%u mpidr=0x%x count=%u",
  		    cpu->cpu_id, cpu->phys_id, topology->num_cpus);
