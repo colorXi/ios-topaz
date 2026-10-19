@@ -2,6 +2,34 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 🎯 CIVI 2026-10-19 21:00: HANG IS BEFORE ipc_init(); startup_debug WAS SILENTLY 0 <<<
+
+**Where the boot stops, measured on the real phone (image `civi-v11.img`, 16,769,024 bytes, SHA256 `85451228d6f12f5345cf6e96ed06c4f37d2cf5a22a841ce02f9a9fe20208a615`, kernel sha256 `a70232671e2221b10e2a1a22bd12fb0202b8e069d454e36202a085a20d3e5237`, CI run `39252150791`, commit `94a494e`).** The visible console ends with exactly the same span as the v10 run, so nothing scrolled off:
+
+```
+mlg_table_max_displ = %d mach_kobj_count = 374        (ipc_kobject.o)
+bug_log_init: Error! gPanicBase is still not initialized  (debug.o, kdp_udp.o)
+kdp_core zlib memory 0x8000                            (out_zlib.o)
+```
+
+**Observation: the marker `civi: ipc_init entered` (stage 0084, injected at the top of `ipc_init()`) did NOT print, and neither did any of the 47 `bsd_init:` markers.** So the hang is **before `ipc_init()` is called**, not inside it. (The earlier "hangs inside ipc_init" reading came from the spam-corrupted photo and is retracted.)
+
+**Root cause of the missing trace, and the fix (stage 0085, commit `89f8368`, CI run `39255701254`).** XNU's `kernel_startup_initialize_upto()` already prints one line per startup entry *before* calling it:
+
+```c
+kprintf("%s[%d, rank %d]: %p(%p)\n", __func__, cur->subsystem, cur->rank, cur->func, cur->arg);
+```
+
+That is exactly the trace needed -- the last line printed names the function that never returns. It is gated on `(startup_debug & STARTUP_DEBUG_VERBOSE) && startup_phase >= STARTUP_SUB_KPRINTF`, and **not one such line appears on the console**, so `startup_debug` is 0 on this build: the boot arg `startup_debug=0x1` is not parsed as 1. The same gate silences `kernel_bootstrap_log()`, which is why there are no `kernel_bootstrap:` phase markers either -- that missing line was the reason the phase could not be located from the log. Stage 0085 forces the bit in the source (4 gates, line-neutral) rather than fight the boot-arg parser. The printed pointers resolve to names offline with `llvm-nm` on the kernel image.
+
+**How the startup order was obtained (no source needed).** The kernel image is a Mach-O 64 LE executable; `__init_entry_set` in the `__BOOTDATA` segment holds `struct startup_entry { subsystem, rank, func, arg }` (24 bytes each), **4076 entries** in linker order, of which **43 are `STARTUP_SUB_MACH_IPC` (13)**. Notable: `_ipc_importance_init` and `_ipc_init` both carry rank `0xffffffff` and the former comes first. The table is sorted at runtime by `qsort` on (subsystem, rank), so the in-image order is *not* the execution order -- but the printed pointers make the order observable.
+
+**The ADT now carries the real iPhone X identity.** `DeviceTree.d22ap.im4p` was extracted from the user's 16.7.16 IPSW (`C:\Users\BUFF\Downloads\iPhone10,3,iPhone10,6_16.7.16_20H392_Restore.ipsw`, 5.75 GB) with the `ipsw` 3.1.739 tool (`ipsw img4 im4p extract DeviceTree.d22ap.im4p -o d22ap.adt`, 186,084 bytes -- the *new* IMG4 container format, magic `bvxn`, not the old DER-wrapped IM4P). `tools/mkadt_civi.py` reads it and now emits a `/product` node with **61 real D22AP properties** (`product-name = 'iPhone X'`, `graphics-featureset-class = APPLE4`, `artwork-scale-factor = 3`, ...). ADT 9,916 -> 12,600 bytes. A control image without `/product` (`civi-v11-noprod.img`, SHA256 `caaafcd933d218e547589e48784ed3753dc1c9425da32936b31d72774e389e6b`) is kept to tell the two apart. The IPSW itself contains **no root filesystem**: the volumes are the APFS images `087-86698-044.dmg` (OS, 4.73 GB), `087-86593-047.dmg` (SystemOS cryptex, 2.74 GB) and `087-86715-047.dmg` (AppOS cryptex, 10.5 MB).
+
+**Root filesystem: all three APFS volumes mount read-only with a locally built `apfs-fuse`** (sgan81/apfs-fuse, built with `-DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CXX_FLAGS="-include cstdint"` plus `libbz2-dev`; the `3rdparty/lzfse` submodule is required). WSL2's kernel has **no `hfsplus` module** (`modprobe: Module hfsplus not found`), and the `hfsplus` package in apt is for *classic* HFS (`hpcopy`/`hpls`), so **there is no native way to write the HFS+ volume here**. The sweet machine built its image on a different Linux box (`/run/media/dipa/android/ios-sweet-ipsw/ios16-root-20H392-v9.img`, 12.1 GB `.simg`, flashed 2026-10-17); that external SSD is **not** attached to this PC, so the image has to be rebuilt. Route being set up: a QEMU Linux VM (its kernel has hfsplus) with the tree handed over as an `mke2fs -d` ext4 image and the target attached as a virtio disk. `hfsprogs` (`mkfs.hfsplus`, `fsck.hfsplus`) and `img2simg`/`simg2img` are installed in WSL.
+
+**Next concrete action:** download the kernel artifact of CI run `39255701254`, repack it into `civi-v12.img` (same cmdline, ADT `shim/out/civi.adt`), `fastboot boot` it and read the **last** console line. If it is `kernel_startup_initialize_upto[13, rank N]: 0x...(...)`, resolve the pointer with `llvm-nm` against `kernel.development.sweet` -- that names the hanging function.
+
 ### >>> CIVI PORT ANALYSIS 2026-10-19 (planning only, no device work) <<<
 
 **What this is:** a feasibility study for porting this project to a **Xiaomi Civi (SM7325 / Snapdragon 778G / Kryo 670, ARMv8.2)**. **No phone was touched: nothing flashed, nothing booted, no CI run, no commits.** Artifacts live outside this repo in `C:\Users\BUFF\ios-civi\` (`recon.ps1` read-only recon script, `PORT-PLAN.md`, `SOC-CONSTANTS.md`).
