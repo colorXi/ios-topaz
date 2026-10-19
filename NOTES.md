@@ -31,7 +31,38 @@
 
 **Tools added for the port (generic, no device work done):** `tools/mkadt_civi.py` (Civi ADT generator, constants verified on the phone, 9916-byte ADT produced) and `tools/apply_civi.py` (idempotent shim constant patcher: FB, GICD/GICR, MPIDR formula, cpufreq domain, hand-off fallback target, UFS base; `--check` previews). Build with `python3 tools/apply_civi.py --dir shim` before `shim/build.sh`, and `MKBOOTIMG=... ` must be set (build.sh has a hardcoded path to the author's own mkbootimg).
 
-### >>> CIVI PORT 2026-10-19 LATE: REAL XNU BOOT IMAGE IS BUILT — READ THIS FIRST <<<
+### >>> CIVI PORT 2026-10-19 LATE: SHIM OK, XNU SILENT ON HARDWARE, QEMU BOOTS <<<
+
+**Two phone boots ran (2026-10-19 ~17:35 and ~17:45). Both reached the XNU jump and then went silent; the phone hung (not in adb, not in fastboot, needs a long power press).** Both times the panel showed exactly the shim's own console, nothing else, and the values are all correct:
+
+```
+SHIM sweet milestone 4: xnu loader
+MMFR0 lo=00101122 tg16=00000001      <- 16 KiB granule confirmed
+MIDR  el1=412FD050 mpidr=81000000     <- Cortex-A55, Civi's real MPIDR
+EMBED (payload PA, right behind _end)
+PHYS  base=180000000 size=f6000000     <- high DDR bank
+VIRT  ffffffe0006000000   ENTRY ffffffe000748b488
+SEGS  n=0000000A end=184C8000
+BOOTARG pa=184CC000 top=184D0000
+JUMP  000000018148B488
+XNU   jumping (fbcon clears screen)
+```
+(Read off the photo with OCR, so digits are approximate; every value is nevertheless self-consistent with the payload header — entry PA, `kernel_end + 0x180000000`, `ba_pa` = 16 KiB-aligned `adt_pa + adt_size`.) **The shim and the loader path are 100 % correct on Civi.** Boot 2 changed two variables (`cpus=1`, `-enable_kprintf_spam`) and produced the identical screen, so the failure is not SMP and not log verbosity.
+
+**QEMU smoke test (the decisive experiment).** `tools/mkadt_civi.py --qemu` already existed (QEMU virt GIC addrs 0x08000000/0x080a0000, CNTFRQ 62500000, vtimer INTID 27, one CPU with `reg=0`, no `/sweet-ufs`), so the project's own `tools/qemu-sweet.py` runs the Civi kernel unchanged. WSL2 got `qemu-system-aarch64 10.2.1` (`apt-get install -y qemu-system-arm`; `unzip` was missing too). `aarch64-linux-gnu-nm` cannot read the Apple Mach-O, so `qemu-sweet.py --kernel` refuses the unstripped `.a` ("must contain exactly one _iso_font symbol") — **run it without `--kernel` and read `fb.png` directly instead**, it renders the text perfectly.
+
+**Result: XNU boots to `SWEET EARLY 20: kprintf startup complete`** (all 20 stages: arm_init MMU on, PE_init_platform, ml_parse_cpu_topology, cpu_bootstrap, kernel_startup_bootstrap, cpu_init, arm_vm_init, TTBR0 off/flushed, physmap rebound, pmap_bootstrap, early I/O page tables, serial_init, fbcon config read + mapping, kprintf startup). 2,454 virtual-timer IRQ exceptions and **zero** exceptions of any other kind; final PC `fffffe0007491104`.
+
+**So the kernel patch set, the Civi ADT structure and the fbcon path are all good.** Re-run with the *real* Civi memory placement (`phys_base 0x180000000`, `mem_size 0xf6000000`, which makes `qemu-sweet.py` ask for 9 GiB of QEMU RAM — WSL had 14 GiB free, fine): identical result, same PC, zero non-IRQ exceptions. **The high DDR bank is therefore NOT the problem.**
+
+That leaves three Civi-only variables, and only one of them can be tested in QEMU:
+1. ~~`phys_base 0x180000000`~~ — ruled out above.
+2. **GIC at 0x17a00000 / 0x17a60000** and **CNTFRQ 19.2 MHz / vtimer INTID 19** — QEMU hardcodes its own GIC, so untestable there. The shim probe #2 did a full 8-frame GICD/GICR scan on the real device, so the addresses are right; what is *not* proven is that XNU's own GIC init (which writes GICD_CTLR/ICC) reaches the same state the shim left behind. On sweet ABL also leaves `GICD_CTLR = 0x10`, writing 0x13 reads back 0x12.
+3. **MPIDR `0x81000000`** — QEMU's is 0, so untestable there. `tools/mkadt_civi.py` grew a `--bootonly` flag for this: emit a single `cpu0` node whose `reg` is the real boot-core MPIDR `0x81000000`, with `cpus=1`. Image `C:\Users\BUFF\ios-civi\bootonly.img` (16,797,696 bytes, SHA256 `806451a4cd58541e817445951e1a69c63622a62bd6cb90e2b60f9c8c70287126`) is built and waiting to be booted. If it prints, the 8-core list / cluster topology / MPIDR matching was the cause; if it is still silent, the cause is the GIC or the console itself.
+
+**Reproduction scripts** (all in `C:\Users\BUFF\ios-civi\`, run with `wsl -d Ubuntu -u root -- bash /mnt/c/Users/BUFF/ios-civi/<name>`): `civi-build-a.sh` (sync + `apply_civi.py` + ADT), `civi-build-b.sh` (compile shim, unpack artifact, mkpayload, append, package), `civi-build-arg.sh "<cmdline>" <name>` (rebuild with any cmdline), `civi-bisect.sh <name> "<mkadt args>" "<cmdline>"`, `civi-verify2.sh` (structural check of the image), `civi-qemu2.sh` / `civi-qemu3.sh` (QEMU smoke test, framebuffer as PNG).
+
+### >>> CIVI PORT 2026-10-19 EARLIER: REAL XNU BOOT IMAGE IS BUILT <<<
 
 **State:** the Civi port has left the planning stage. Three shim probe boots already validated every SoC constant; the Civi kernel patch set (81 files) compiles in CI; a full **XNU boot image** is built and verified and is waiting to be `fastboot boot`ed. Android is still fully installed — **nothing has been flashed, `userdata` untouched.**
 

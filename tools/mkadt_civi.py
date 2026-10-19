@@ -135,7 +135,7 @@ CIVI_CORES = [
 ]
 
 
-def build(seed=None, qemu=False, lowmem=False, native=False):
+def build(seed=None, qemu=False, lowmem=False, native=False, bootonly=False):
     """qemu=True: QEMU virt GIC addresses and CNTFRQ (tools/qemu-sweet.py).
     lowmem=True: the carve-out-riddled low banks instead of the clean high one."""
     phys_base, mem_size = (PHYS_BASE, MEM_SIZE) if lowmem else (HIGH_PHYS_BASE, HIGH_MEM_SIZE)
@@ -180,6 +180,13 @@ def build(seed=None, qemu=False, lowmem=False, native=False):
 
     cpu_nodes = []
     cores = [(i, 0) for i in range(1)] if qemu else CIVI_CORES
+    if bootonly:
+        # Only the core ABL actually hands control to.  Bisects "XNU dies before
+        # its first kprintf": if the tree lists a single core with the real
+        # MPIDR of the boot core, nothing about cpu_start / MPIDR matching /
+        # cluster topology can be the cause.  The boot core is Civi cpu0
+        # (Cortex-A55, MPIDR 0x81000000), confirmed by the shim probe.
+        cores = [(CIVI_CORES[0][0], CIVI_CORES[0][1])]
     for n, (mpidr, clk) in enumerate(cores):
         cpu_nodes.append(node(f'cpu{n}', [
             ph(),
@@ -286,7 +293,7 @@ def build(seed=None, qemu=False, lowmem=False, native=False):
 
 if __name__ == '__main__':
     root = build(qemu='--qemu' in sys.argv, lowmem='--lowmem' in sys.argv,
-                 native='--native' in sys.argv)
+                 native='--native' in sys.argv, bootonly='--bootonly' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
