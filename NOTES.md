@@ -2,6 +2,35 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> CIVI PORT ANALYSIS 2026-10-19 (planning only, no device work) <<<
+
+**What this is:** a feasibility study for porting this project to a **Xiaomi Civi (SM7325 / Snapdragon 778G / Kryo 670, ARMv8.2)**. **No phone was touched: nothing flashed, nothing booted, no CI run, no commits.** Artifacts live outside this repo in `C:\Users\BUFF\ios-civi\` (`recon.ps1` read-only recon script, `PORT-PLAN.md`, `SOC-CONSTANTS.md`).
+
+**Observed (from source + NOTES.md):**
+- Patch 0081 (`-mcpu=cortex-a53`, commpage `casa` rewritten as `ldaxr/stxr`, the 11-op LSE/`ldapr` emulator in `sleh.c` + `machine_routines_asm.s`, `__ARM_PAN_AVAILABLE__` removed) exists **only** because SM6225 is ARMv8.0. SM7325 is ARMv8.2 (LSE, RCpc, PAN): restoring `-march=armv8.2-a+crypto` makes 0081 disappear in its entirety.
+- 0082 (boot on MPIDR 0x100, `SweetCPU::startAll` expecting phys_id 0x100) exists only because the ABL handed off to a Silver core. **Guess:** Civi's ABL starts on CPU0 (A78, MPIDR 0), so 0082 can be dropped, the ADT lists 8 cpus and the cmdline uses `cpus=8`.
+- `shim/ufs.c` has exactly one device-specific define (`UFS_BASE`); everything else is standard JEDEC UFSHCI (JESD223) register/UTRD/PRDT/SCSI, and the probe already parses GPT and f2fs/ext4 superblocks. UFS is therefore nearly free on a new SoC.
+- The XNU-side work is SoC-independent and inherited unchanged: GICv3 Group 1 path for INTID 19 (`pe_fiq.c`), PSCI via `smc`, the `Sweet*` built-in IOKit classes, and the whole ADT Apple identity (`unique-chip-id` + `chip-id` -> IOPlatformUUID, otherwise CFPreferences/kCFPreferencesCurrentHost fails and the 1-hour data migration runs every boot; dev-fused cert status for activation; `asmb` lp-sip; `/product` from the D22AP tree; 1125x2436 canvas), all boot-args, and the diagnostic tool chain (4 MiB persistent ring log in the last userdata blocks, `/dev/null` tee, IOKit trace, heap `STR` scan on crash, user stack sampler, `sweetscan/sweetiolog/sweetnull/sweetsample`, `sweetusb=2` live UDP console to the PC).
+- Qualcomm constants measured on sweet and unchanged in topaz: vtimer INTID 19 / ptimer 18 (secure-phys/phys/virt/hyp = PPI 1/2/3/0), 19.2 MHz timer, PSCI 1.1 via `smc`, SMCCC 1.1, ABL leaves GICD_CTLR = 0x10 and writing 0x13 reads back 0x12 (**EnableGrp1A, bit 1, is the bit that matters**), entry EL1 / MMU off / x0 = DTB, and **no serial console - the panel is the only debug channel**.
+- Every Qualcomm XPU carve-out must lie below `physBase`, because the loader maps `[kernel, physBase+memSize)` cacheable. sweet used 0xb0000000 + 0x4d000000 and dodged each carve-out by hand; topaz avoided the problem with `--highmem` (0x140000000 + 4 GiB). A new port should prefer the high DDR bank.
+- Touch trap recorded in the sweet notes: Goodix GT9896 at I2C 0x5d timed out until an **RPMh L11C LDO vote** was added (`bsd/dev/sweet_rpmh.c`). Expect the same class of problem on Civi; the LDO resource id is SoC-specific.
+- 0080 splits into three: keep the `sweethw=1` gate for the SM7150 drivers, widen the `SweetCPU.cpp` MPIDR check for 8 cores, and change `"Kryo 260"` to the Civi core name.
+
+**Next action for a Civi port (none destructive):** run the read-only recon (getprop, `/proc/iomem`, `/proc/device-tree`, dmesg for touch/panel/ufs/gic), fill in the constants table, then boot a probe-only shim with `fastboot boot` and read MIDR / TGran16 / GIC / UFS / splash-FB from the panel. Do not flash `userdata` before that.
+
+**Civi recon is done (2026-10-19, phone has unlocked bootloader + Magisk, root granted to the adb shell).** All Civi constants are measured, not guessed:
+
+- GICD `0x17a00000` / GICR `0x17a60000` (reg `<0x17a00000 0x10000, 0x17a60000 0x100000>`, `arm,gic-v3`) -- **identical to sweet**, GICR stride 0x20000 x 8 PEs.
+- Framebuffer `0x0e1000000` (reserved-memory `splash_region`, `disp_rdump_region@e1000000` +20M); UFS `0x01d84000` (`soc/ufshc@1d84000`).
+- MPIDR: `cpus/cpu@{0,100..700}/reg` -> Aff1 = core index, Aff0 = 0, i.e. `i << 8`, same shape as sweet. cpu0-3 = A55 @1.8048 GHz, cpu4-7 = A78 @2.4 GHz (CPU part 0xd05/0xd41, Features include `atomics`).
+- RAM banks `<0x80000000 0x39700000> <0xc0000000 0xc0000000> <0x180000000 0x100000000>`. Root `/proc/iomem` shows `System RAM 0xdff00000-0x27fffffff` plus a reserved block **0x276000000-0x27fffffff that is NOT in the DT**, so the kernel window is capped at 0x180000000 + 0xf600000.
+- SoC compatible `qcom,yupik`; touch is **Synaptics TCM over SPI** (`synaptics_tcm_spi spi0.0`, controller `qcom,spi-geni` @ `0x00980000`, DT has `xiaomi_touch`) -- neither of sweet's Goodix/I2C nor topaz's FT5452/I2C, so a new driver is needed. Under-display fingerprint is `soc:fingerprint_goodix`.
+- Panel: `msm_drm.dsi_display0=qcom,mdss_dsi_k9b_42_02_0a_dsc_cmd`, Samsung K9B AMOLED, DSI **command** mode with DSC, modes `1080x2400x60x110807cmd` / `1080x2400x120x110807cmd`. DSI ctrl `0x0ae94000`, phy `0x0ae94900`, DP `0x0ae90000`. Like sweet, the bring-up may not need the DSI controller at all if ABL leaves the panel scanning out of the cont splash buffer.
+- DWC3 `0x0a600000`, same address as sweet, so the `sweetusb=2` live-log trick should port over. cpufreq-hw `0x18591000`.
+- `IMEM_RESTART_REASON` and `PSHOLD` are still topaz values; they only affect `reset()` (bounce back into fastboot), not the boot itself.
+
+**Tools added for the port (generic, no device work done):** `tools/mkadt_civi.py` (Civi ADT generator, constants verified on the phone, 9916-byte ADT produced) and `tools/apply_civi.py` (idempotent shim constant patcher: FB, GICD/GICR, MPIDR formula, cpufreq domain, hand-off fallback target, UFS base; `--check` previews). Build with `python3 tools/apply_civi.py --dir shim` before `shim/build.sh`, and `MKBOOTIMG=... ` must be set (build.sh has a hardcoded path to the author's own mkbootimg).
+
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
 **LIVE LOG over USB (0077, boot 0077s): no more recovery round-trips.** Boot an image with `sweetusb=2`, run `tools/sweet-usbnet.sh logs/live-NAME.txt` on the PC: it waits for the phone's CDC-ECM interface, sets 192.168.7.1/24 (sudo) and prints/saves the kernel console the phone streams every 100 ms as UDP to 192.168.7.1:5140 (starts with the last 64 KiB). `ping 192.168.7.2` checks the link. Current image: `shim/out/shim-boot-0077s.img` (kernel 0077, ADT sweet-0069hi, cpus=6, sweetfb_noconsole=1, sweetfb_hz=30, sweetusb=2). The recovery pull (`tools/sweet-log-pull.sh`) is still the way after a panic/hang before USB comes up.

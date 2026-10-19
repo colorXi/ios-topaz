@@ -1,0 +1,66 @@
+name: shim-civi
+
+# Builds the Civi boot shim on a Linux runner and uploads shim-boot.img as an
+# artifact, so no local Linux/WSL toolchain is needed for the probe boots.
+#
+# Usage: Actions -> shim-civi -> Run workflow
+# Then download the artifact "shim-boot-civi" and:
+#     fastboot boot shim-boot.img
+#
+# The constants come from tools/apply_civi.py (measured on the phone).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ topaz ]
+    paths: [ 'shim/**', 'tools/apply_civi.py', '.github/workflows/shim-civi.yml' ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout (topaz branch)
+        uses: actions/checkout@v4
+        with:
+          ref: topaz
+
+      - name: toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu cpio gzip python3 python3-pip
+          pip3 install mkbootimg
+          aarch64-linux-gnu-gcc --version | head -1
+          mkbootimg --help | head -3
+
+      - name: apply civi constants to the shim
+        run: |
+          python3 tools/apply_civi.py --dir shim
+          grep -n 'GICD_BASE\|GICR_BASE' shim/shim.c | head -4
+          grep -n 'FB_BASE' shim/console.h
+          grep -n 'UFS_BASE' shim/ufs.c
+
+      - name: build probe shim (no xnu payload = diagnostics image)
+        working-directory: shim
+        run: |
+          chmod +x build.sh
+          MKBOOTIMG=mkbootimg ./build.sh
+
+      - name: verify boot image
+        run: python3 tools/unpack_bootv2.py shim/out/shim-boot.img shim/out/check
+
+      - name: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: shim-boot-civi
+          path: |
+            shim/out/shim-boot.img
+            shim/out/check/
+
+      - name: summary
+        run: |
+          echo "### shim-boot.img built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -n '0x17a00000\|0x17a60000\|0x0e1000000\|0x01d84000\|0x18591000' \
+               shim/shim.c shim/console.h shim/mmu.h shim/ufs.c >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
