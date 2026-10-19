@@ -79,6 +79,35 @@ PATCHES = [
 BASE_SUBS = {
     '0010-sweet-early-framebuffer-debug.patch': [('0x9c000000', '0x0e1000000')],
     '0012-sweet-keep-debug-console-after-ttbr0.patch': [('0x9c000000', '0x0e1000000')],
+
+    # civi: temporary bisect markers inside the UFS driver. On the phone the
+    # console stops right before the first "SWEET UFS:" line, i.e. somewhere in
+    # sweet_ufs_init() before its first printf, so there is no way to tell which
+    # step hangs. Each marker prints on entry and on return. Old patterns are
+    # single lines on purpose (git checks the patches out with CRLF); the
+    # replacements may be several lines.
+    '0028-sweet-ufs-root-device.patch': [
+        ('+sweet_ufs_init(void)',
+         '+sweet_ufs_init(void)\n+/* civi bisect */\n+{ printf("SWEET UFS: [1] sweet_ufs_init entered\\n"); }'),
+        ('+\tPE_parse_boot_argn("ufsroot", want, sizeof(want));',
+         '+\tprintf("SWEET UFS: [2] DT node ok, want=%s\\n", want);\n'
+         '+\tPE_parse_boot_argn("ufsroot", want, sizeof(want));'),
+        ('+\tsu.regs = ml_io_map(reg[0], reg[1]);',
+         '+\tsu.regs = ml_io_map(reg[0], reg[1]);\n'
+         '+\tprintf("SWEET UFS: [3] regs=%p (dt pa 0x%llx size 0x%x)\\n",'
+         ' su.regs, (unsigned long long)reg[0], size);'),
+        ('+\tsu.dma_pa = ptoa_64(pn);',
+         '+\tsu.dma_pa = ptoa_64(pn);\n'
+         '+\tprintf("SWEET UFS: [4] dma=%p pa 0x%llx lun %u secsize %u\\n",'
+         ' su.dma, (unsigned long long)su.dma_pa, su.lun, su.secsize);'),
+        ('+\terror = ufs_take_over_host();',
+         '+\tprintf("SWEET UFS: [5] ufs_take_over_host...\\n");\n'
+         '+\terror = ufs_take_over_host();\n'
+         '+\tprintf("SWEET UFS: [6] ufs_take_over_host -> %d\\n", error);'),
+        ('+\t\tint error = sweet_ufs_init();',
+         '+\t\tprintf("SWEET UFS: [0] sweet_ufs_rootdev called\\n");\n'
+         '+\t\tint error = sweet_ufs_init();'),
+    ],
 }
 
 
@@ -121,7 +150,7 @@ def main():
                 text = text.replace(old, new)
                 hits += c
             open(dst_path, 'w', encoding='utf-8', newline='\n').write(text)
-            print(f'  {f}: rewrote {hits} framebuffer address(es)')
+            print(f'  {f}: rewrote {hits} site(s)')
         else:
             shutil.copyfile(src_path, dst_path)
         n += 1
