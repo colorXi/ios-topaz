@@ -31,6 +31,31 @@
 
 **Tools added for the port (generic, no device work done):** `tools/mkadt_civi.py` (Civi ADT generator, constants verified on the phone, 9916-byte ADT produced) and `tools/apply_civi.py` (idempotent shim constant patcher: FB, GICD/GICR, MPIDR formula, cpufreq domain, hand-off fallback target, UFS base; `--check` previews). Build with `python3 tools/apply_civi.py --dir shim` before `shim/build.sh`, and `MKBOOTIMG=... ` must be set (build.sh has a hardcoded path to the author's own mkbootimg).
 
+### >>> 🎉 MILESTONE 2026-10-19 18:10: XNU RUNS ON THE CIVI (SWEET EARLY 1-5, then a real panic) <<<
+
+**First time XNU has ever executed on the Xiaomi Civi.** Image `C:\Users\BUFF\ios-civi\civi-fbfix.img` (16,805,888 bytes, SHA256 `020102f166faf86cfa6807c493aba3550eb72be67fee2942ec79f578b9befc1d`, CI run **`39234189461`**, commit `5d69bfd`) = framebuffer-fixed kernel + full 8-node Civi ADT + `cpus=8`. Panel:
+
+```
+SWEET EARLY 1: arm_init entered (MMU on)
+SWEET EARLY 2: PE_init_platform ...            (partly under the punch hole)
+SWEET EARLY 3: ml_parse_cpu_topo... done
+SWEET EARLY 4: cpu_bootstrap done
+SWEET EARLY 5: kernel_startup_bootstrap done
+
+SWEET EARLY PANIC: machine_routines.c:1244
+  Assertion failed: cpu_id <= (unsigned int)ml_get_max_cpu_number()
+```
+
+The green bar along the bottom edge is patch 0010's stage marker strip (one 64 px band per stage, `stage * 28 << 16` colour), and the shim's red console area below the text is still untouched — proof XNU took over the splash framebuffer and the `0x0e1000000` rewrite is live. Verified in the binary itself: `0x9c000000` has **0** 64-bit literal occurrences, `0x0e1000000` has 1 (the `MOV64 x10` literal pool entry); the stage-0 band is folded into `0x0E19C1800`.
+
+**Next failure is the secondary-CPU start path** (`machine_routines.c:1244`, between `kernel_startup_bootstrap` and `cpu_init`). `SWEET_SMP_MAX_CPUS` is already 8 (patch 0078 raised it from 6) and `cpus=8` passes the clamp in 0065, so the clamp is not it. `bootonly.img` never got far enough to say anything about this (it died on the framebuffer bug), so the single-node ADT is still worth retrying now.
+
+**Cheap iteration without a CI round trip:** `tools/repack.sh` (mirrored at `C:\Users\BUFF\ios-civi\repack.sh`) rebuilds only the payload and boot image from the *already built* kernel `/root/civi-kernel-fbfix/kernel.development.sweet` with any cmdline and any ADT:
+```
+bash /mnt/c/Users/BUFF/ios-civi/repack.sh "<cmdline>" <outname> [adt-path]
+```
+`civi-cpu1.img` (SHA256 `7db6b8161271888cba4b1f06f84d00aaf5715208b94f05f39e544a9d95e4d5f1`) is the 8-node ADT with `cpus=1`, queued next.
+
 ### >>> CIVI 2026-10-19 ROOT CAUSE FOUND: SWEET'S FRAMEBUFFER ADDRESS IS HARDCODED IN THE KERNEL PATCHES <<<
 
 **Why every phone boot looked like "nothing happened".** `xnu/patches-civi/0010-sweet-early-framebuffer-debug.patch` and `0012-sweet-keep-debug-console-after-ttbr0.patch` hardcode **sweet's splash framebuffer physical address `0x9c000000`** in five places:
