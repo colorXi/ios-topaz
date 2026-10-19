@@ -52,16 +52,42 @@ PATCHES = [
     ], '0081-civi-boot-cpu-mpidr.patch'),
 ]
 
+# Sweet's early framebuffer console hardcodes sweet's splash FB physical address.
+# On Civi that address (0x9c000000) is not RAM at all -- System RAM starts at
+# 0xdff00000 -- so the very first `str w1, [x5], #4` in osfmk/arm64/start.s is a
+# data abort before the exception vectors are even installed: XNU dies silently
+# and the panel keeps showing the shim's own console.  This is what made every
+# phone boot of the Civi port look like "nothing happened" while QEMU booted to
+# SWEET EARLY 20 (QEMU has RAM everywhere, so 0x9c000000 was harmless there).
+#
+# Civi's ABL splash buffer is 0x0e1000000 (reserved-memory/splash_region,
+# disp_rdump_region@e1000000 +20M).  Five sites, all of them `+` lines except
+# 0012's `-#define EARLY_FB ...` line, which has to change with them or 0012
+# will no longer match the tree that 0010 produced.
+#
+#   0010 osfmk/arm64/start.s        MOV64 x0, (FB + 2368*4320)   stage-0 band
+#   0010 osfmk/arm64/start.s        MOV64 x10, FB               bootstrap VA=PA
+#   0010 osfmk/arm64/sweet_early.c  #define EARLY_FB ... FB
+#   0012 osfmk/arm64/arm_vm_init.c  *slot = FB|ARM_TTE_*        final VA alias
+#   0012 osfmk/arm64/sweet_early.c  static ... *early_fb = ... FB
+BASE_SUBS = {
+    '0010-sweet-early-framebuffer-debug.patch': [('0x9c000000', '0x0e1000000')],
+    '0012-sweet-keep-debug-console-after-ttbr0.patch': [('0x9c000000', '0x0e1000000')],
+}
+
 
 def main():
     check = '--check' in sys.argv
     if check:
-        out = {}
         for src, reps, name in PATCHES:
-            out[name] = [sum(open(os.path.join(SRC, src)).read().count(a) for a, _ in reps),
-                         len(reps)]
-        for k, v in out.items():
-            print(f'  {k}: replacements found {v[0]}/{v[1]}')
+            found = sum(open(os.path.join(SRC, src), encoding='utf-8').read().count(a) for a, _ in reps)
+            print(f'  {name}: replacements found {found}/{len(reps)}')
+        for f, reps in BASE_SUBS.items():
+            text = open(os.path.join(SRC, f), encoding='utf-8').read()
+            for old, new in reps:
+                n = text.count(old)
+                flag = 'ok' if n else 'MISSING'
+                print(f'  base {f}: {old} -> {new}  ({n} site(s)) {flag}')
         print(f'  base: 0001-{BASE_LAST:04d} copied verbatim')
         return
 
@@ -77,7 +103,21 @@ def main():
         # .patch AND the .sh stage scripts (0019/0020/0026) -- blacktop's
         # build.sh runs the stage scripts by name, so they must come along or
         # the "Fetch build script" step fails on a non-matching glob.
-        shutil.copyfile(os.path.join(SRC, f), os.path.join(DST, f))
+        src_path, dst_path = os.path.join(SRC, f), os.path.join(DST, f)
+        subs = BASE_SUBS.get(f)
+        if subs:
+            text = open(src_path, encoding='utf-8').read()
+            hits = 0
+            for old, new in subs:
+                c = text.count(old)
+                if not c:
+                    raise SystemExit(f'{f}: pattern not found:\n  {old}')
+                text = text.replace(old, new)
+                hits += c
+            open(dst_path, 'w', encoding='utf-8', newline='\n').write(text)
+            print(f'  {f}: rewrote {hits} framebuffer address(es)')
+        else:
+            shutil.copyfile(src_path, dst_path)
         n += 1
     print(f'  copied {n} base files (0001-{BASE_LAST:04d}, patches + stage scripts)')
 

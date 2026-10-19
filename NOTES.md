@@ -31,6 +31,40 @@
 
 **Tools added for the port (generic, no device work done):** `tools/mkadt_civi.py` (Civi ADT generator, constants verified on the phone, 9916-byte ADT produced) and `tools/apply_civi.py` (idempotent shim constant patcher: FB, GICD/GICR, MPIDR formula, cpufreq domain, hand-off fallback target, UFS base; `--check` previews). Build with `python3 tools/apply_civi.py --dir shim` before `shim/build.sh`, and `MKBOOTIMG=... ` must be set (build.sh has a hardcoded path to the author's own mkbootimg).
 
+### >>> CIVI 2026-10-19 ROOT CAUSE FOUND: SWEET'S FRAMEBUFFER ADDRESS IS HARDCODED IN THE KERNEL PATCHES <<<
+
+**Why every phone boot looked like "nothing happened".** `xnu/patches-civi/0010-sweet-early-framebuffer-debug.patch` and `0012-sweet-keep-debug-console-after-ttbr0.patch` hardcode **sweet's splash framebuffer physical address `0x9c000000`** in five places:
+
+```
+0010 osfmk/arm64/start.s        MOV64 x0, (0x9c000000 + 2368*4320)   stage-0 white band, MMU OFF
+0010 osfmk/arm64/start.s        MOV64 x10, 0x9c000000               bootstrap VA=PA block
+0010 osfmk/arm64/sweet_early.c  #define EARLY_FB ((volatile uint32_t *)(uintptr_t)0x9c000000)
+0012 osfmk/arm64/arm_vm_init.c  *slot = 0x9c000000ULL | ARM_TTE_*    final VA alias
+0012 osfmk/arm64/sweet_early.c  static ... *early_fb = ...0x9c000000
+```
+
+On Civi **`0x9c000000` is not RAM at all** -- root `/proc/iomem` has `System RAM 0xdff00000-0x27fffffff`, with `0xe1000000-0xe33fffff` reserved for the splash/display buffers. Civi's ABL splash buffer is `0x0e1000000`. So the very first `str w1, [x5], #4` in `start_first_cpu` is a data abort **before the exception vectors are installed** -- no handler, no console, no panic, just a dead phone. That is exactly what the photos showed: the panel still displaying the shim's own red console, never overwritten.
+
+**This is why QEMU lied.** QEMU's virt board has RAM everywhere, so writing to `0x9c000000` was harmless there and the kernel booted to `SWEET EARLY 20`. `tools/qemu-sweet.py` additionally hardcodes `FB_BASE = 0x9c000000` in the boot_args it builds, while the Civi ADT's `sweet-fbcon` node says `0x0e1000000` -- the two disagreed and QEMU hid it.
+
+**Fix applied:** `tools/mkcivi_patches.py` grew a `BASE_SUBS` table that rewrites `0x9c000000` -> `0x0e1000000` in those two patches while copying them into `xnu/patches-civi/`. 0012's `-#define EARLY_FB ...` line is rewritten too, otherwise 0012 would not match the tree 0010 produces. Line counts are unchanged, so the hunk headers stay valid. `python3 tools/mkcivi_patches.py --check` now reports the rewrite.
+
+**Controlled QEMU experiment (identical cmdline for every variant, so the earlier confounded run with a shortened cmdline is discarded).** `tools/qemu-sweet.py` + `mkadt_civi.py --qemu`:
+
+| variant | result |
+|---|---|
+| C control, QEMU values | 2,185 timer IRQs, PC `fffffe0007491104` -- boots |
+| A2 GICD/GICR -> Civi `0x17a00000`/`0x17a60000` | **zero exceptions**, PC `fffffe000732560c` -- dies at once |
+| A3 CNTFRQ 19.2 MHz + vtimer INTID 19 | 2,185 IRQs, same PC -- **not the cause** |
+| B2 `cpu0` `reg` = `0x81000000` | 2,187 IRQs, same PC -- **not the cause** |
+| real `phys_base 0x180000000` + `mem_size 0xf6000000` | 2,183 IRQs, same PC, zero non-IRQ exceptions -- **not the cause** |
+
+So CNTFRQ and the MPIDR list are cleared, and the wrong-GIC case does reproduce the same silent death -- but the GIC addresses are correct for Civi (probe #2 did a full 8-frame GICD/GICR scan on the device), so the framebuffer address was the real defect.
+
+**Ruled out by the phone itself:** `bootonly.img` (a single `cpu0` node with the real boot-core MPIDR, `cpus=1`) produced the byte-identical shim screen, so the 8-core list / cluster topology / MPIDR matching is not involved. The shim runs with the MMU off at the jump (`shim/shim.c:508`, "An xnu payload in the ramdisk means: boot it (MMU stays off)") and its own console output is correct, so the hand-off itself is fine.
+
+**Next:** CI run with the framebuffer fix, then rebuild and boot. Expected: the panel finally shows `SWEET EARLY 1..20` in green on the real device.
+
 ### >>> CIVI PORT 2026-10-19 LATE: SHIM OK, XNU SILENT ON HARDWARE, QEMU BOOTS <<<
 
 **Two phone boots ran (2026-10-19 ~17:35 and ~17:45). Both reached the XNU jump and then went silent; the phone hung (not in adb, not in fastboot, needs a long power press).** Both times the panel showed exactly the shim's own console, nothing else, and the values are all correct:
