@@ -116,12 +116,22 @@ def node(name, props=(), children=()):
     return n
 
 
-# civi: eight cores, MPIDR Aff1 = core index (cpu@0, cpu@100 ... cpu@700).
-# A55 = cores 0-3 @ 1.8048 GHz, A78 = cores 4-7 @ 2.4 GHz. One homogeneous SMP
-# cluster, exactly how sweet describes its six A55 + two A76.
+# civi: eight cores. Real MPIDRs measured on the phone by probe #3
+# (PSCI CPU_ON brute force; every woken core reported its own MPIDR_EL1):
+#
+#     core N  ->  0x81000000 | (N << 8)      Aff3 = 0x81, Aff2 = 0, Aff1 = N
+#
+# core0-3 are Cortex-A55 (CPU part 0xd05, 1.8048 GHz), core4-7 are A78
+# (0xd41, 2.4 GHz). The Aff3 = 0x81 is NOT in the Android device tree
+# (reg 0x0..0x700) and NOT in GICR_TYPER -- Qualcomm's GIC never reports it.
+# XNU compares the hardware MPIDR against this reg and panics on a mismatch,
+# so it has to be spelled out here. (The TrustZone ignores Aff3 in CPU_ON
+# targets, but the cores read 0x81 themselves and that is what XNU sees.)
 CIVI_CORES = [
-    (0x000, 1804800000), (0x100, 1804800000), (0x200, 1804800000), (0x300, 1804800000),
-    (0x400, 2400000000), (0x500, 2400000000), (0x600, 2400000000), (0x700, 2400000000),
+    (0x81000000, 1804800000), (0x81000100, 1804800000),
+    (0x81000200, 1804800000), (0x81000300, 1804800000),
+    (0x81000400, 2400000000), (0x81000500, 2400000000),
+    (0x81000600, 2400000000), (0x81000700, 2400000000),
 ]
 
 

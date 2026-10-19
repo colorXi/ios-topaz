@@ -30,6 +30,20 @@ DEFAULT_DIR = 'shim'
 
 # (file, regex, replacement, human note)
 RULES = [
+    ('console.c',
+     r'#define MARGIN\t\t24',
+     '#define MARGIN\t\t24\n'
+     '/* civi: this panel is a punch-hole AMOLED -- the camera hides the top of\n'
+     ' * the screen, so start the console below it or the first lines are\n'
+     ' * invisible (and the panel cutout is exactly where con_clear paints). */\n'
+     '#define TOP_Y\t\t150',
+     'console: add TOP_Y below the punch-hole camera'),
+
+    ('console.c',
+     r'int x0 = MARGIN \+ col \* CH_W, y0 = MARGIN \+ row \* CH_H;',
+     'int x0 = MARGIN + col * CH_W, y0 = TOP_Y + row * CH_H;',
+     'console: start rows at TOP_Y'),
+
     ('console.h',
      r'(#define\s+FB_BASE\s+)0x[0-9a-fA-F]+UL',
      r'\g<1>0x0e1000000UL',
@@ -51,9 +65,16 @@ RULES = [
      'GICR 0x0f300000 -> 0x17a60000'),
 
     ('shim.c',
+     r'(#define\s+IMEM_RESTART_REASON\s+)0x[0-9a-fA-F]+UL',
+     r'\g<1>0x146aa65cUL',
+     'IMEM restart_reason 0x0c12565c -> 0x146aa65c '
+     '(soc/qcom,msm-imem@146aa000 restart_reason@65c)'),
+
+    ('shim.c',
      r'static inline uint64_t cpu_mpidr\(int i\)\s*\{[^}]*\}',
      'static inline uint64_t cpu_mpidr(int i) { return (uint64_t)i << 8; }',
-     'MPIDR: civi Aff1 = core index (same formula shape as sweet)'),
+     'MPIDR: civi Aff1 = core index (probe #2 will replace this with the real '
+     'Aff3:Aff2 values read from the GICR frames)'),
 
     ('shim.c',
      r'uintptr_t b = 0x[0-9a-fA-F]+;',
