@@ -201,8 +201,11 @@ def build(seed=None, qemu=False, lowmem=False, native=False, bootonly=False):
             ph(),
             ('device_type', cstr('cpu')),
             # 'qcom,kryo' is what the live Civi DT says; 'ARM,v8' keeps the
-            # XNU IONameMatch working.
-            ('compatible', cstr('qcom,kryo') + cstr('ARM,v8')),
+            # XNU IONameMatch working.  SweetCPU (patches 0018/0065) matches
+            # 'qcom,kryo470' and calls ml_set_max_cpus() from its start(); if
+            # no driver matches, kernel_bootstrap_thread sleeps forever in
+            # kperf_init_early()->ml_wait_max_cpus().  Keep that token too.
+            ('compatible', cstr('qcom,kryo') + cstr('qcom,kryo470') + cstr('ARM,v8')),
             ('reg', u32(mpidr if not qemu else n)),  # MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(n)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),

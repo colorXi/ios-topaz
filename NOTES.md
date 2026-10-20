@@ -2,6 +2,24 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> 🎯🎯 CIVI 2026-10-20 09:20: HANG FOUND AND FIXED -- SweetCPU NEVER MATCHED, kperf WAITED FOREVER <<<
+
+**The full kernel log was dumped from the guest, so the console-ring ambiguity is over.** `struct msgbuf` is at VA `0xfffffe0007b72660` (`_msgbuf`), `msg_bufc` at `+16`; on the v13 kernel it is PA `0x181bf5d2c`, `msg_size=0x20000`, `msg_bufx=0x102f1`, `msg_bufr=0` -- the ring had **not wrapped**, so bytes `[0, 0x102f1)` are the whole log (701 lines, copied to `C:\Users\BUFF\ios-civi\civi-msgbuf.txt`). The true last line is:
+
+```
+[    0.432155]: SWEET FB: AppleCLCD 1080x2400 stride 4320 at 0x9c000000, default surface 1, presented as 1125x2436
+```
+
+The `kdp_core zlib memory 0x8000` block seen below it in fbcon snapshots is **older**, not the end. 0086 markers up to `civi: vm_set_restrictions done` are present; `civi: kperf_init_early done` is **absent**. So the bootstrap thread was sleeping inside `kperf_init_early()`.
+
+**Root cause.** `kperf_init_early()` calls `ml_wait_max_cpus()`, which sleeps on `max_cpus_lock` until `max_cpus_initialized == MAX_CPUS_SET`. Only `ml_set_max_cpus()` sets that, and the only caller on this port is `SweetCPU::start()`/`startAll()` (patches 0018/0065). SweetCPU's config-table match is `IONameMatch = 'qcom,kryo470'`, but `tools/mkadt_civi.py` gave the `/cpus` nodes only `qcom,kryo` + `ARM,v8`. No SweetCPU instance was created, `ml_set_max_cpus()` never ran, and the bootstrap thread slept forever -- while the IOKit matching thread continued and registered the platform expert/AppleCLCD, which is why the log ends at the FB line. The phone and QEMU stopped at the same place.
+
+**Fix (verified in QEMU).** `tools/mkadt_civi.py` now emits `compatible = 'qcom,kryo|qcom,kryo470|ARM,v8'` on each CPU node. QEMU then prints `SWEET CPU: requested=1 selected=1`, `cpu=0 ... came alive; SGI1 OK`, `civi: kperf_init_early done`, and enters `bsd_init` (`kauth_init`, `process_name`...). It then panics exactly where expected with no root: `IOFindBSDRoot: SWEET UFS root ufsroot0 unavailable: 6 @IOKitBSDInit.cpp:778` (QEMU's ADT omits `/sweet-ufs`).
+
+**Phone image ready:** `C:\Users\BUFF\ios-civi\civi-v13b.img` (16,769,024 bytes, SHA256 `e5fcea4282cb998783c8ecab2a11c1fa4e6e33c9c203f05d764faf01ad398dee`) = v13 kernel + 0086 markers + fixed ADT + 8-CPU cmdline. Next: `adb reboot bootloader` then `fastboot boot civi-v13b.img`; expect the 8 CPU bring-up logs, `civi: kperf_init_early done`, `civi: bsd_init done`, then the root-mount loop against Android `userdata`.
+
+**Tooling:** `tools/qemu-sweet.py` gained `--pmsave ADDR:SIZE:FILE` (repeatable; QMP native `pmemsave`) so any guest physical range can be dumped without HMP's file-path parser. The ADT `sweet-fbcon` height is still 2400; use the msgbuf, not the ring, for full logs.
+
 ### >>> 🎯🎯 CIVI 2026-10-19 22:00: QEMU LOCATES THE HANG (startup sequence completes, bsd_init never runs) <<<
 
 **The QEMU smoke test is a better instrument than a phone photo.** `tools/qemu-sweet.py` boots the Civi kernel and *decodes the framebuffer to text* (`fb.txt`), so the whole console is readable instead of 45 OCR'd lines. The Civi console lives at `0x0e1000000` (not sweet's `0x9c000000`), so `qemu-sweet.py` now honours `SWEET_FB_BASE` from the environment. QEMU reproduces the phone's stop **exactly** (same last line, `kdp_core zlib memory 0x8000`).

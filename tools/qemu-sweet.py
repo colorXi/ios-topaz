@@ -23,7 +23,13 @@ An undecodable or blank screen returns 3 with --fail-on-panic.
 import argparse, json, os, socket, struct, subprocess, sys, time, zlib
 
 FB_BASE = int(os.environ.get('SWEET_FB_BASE', '0x9c000000'), 0)
-FB_W, FB_H = 1080, 2400
+FB_W = int(os.environ.get('SWEET_FB_W', '1080'), 0)
+# The console does not scroll: it stops at the bottom of the framebuffer, so
+# everything past the last row is lost.  The real panel is 1080x2400 (75 rows
+# of 32px), which is why the phone photos always show the same 75 lines.  In
+# QEMU there is RAM everywhere, so the console can be given a taller virtual
+# framebuffer and the whole boot log fits.
+FB_H = int(os.environ.get('SWEET_FB_H', '2400'), 0)
 FB_STRIDE = FB_W * 4
 PAGE = 0x4000
 STUB_PA = 0x40200000	# above the dtb QEMU places at RAM base
@@ -139,10 +145,13 @@ def qmp(sock_path, *cmds, pmemsave=None):
         if 'error' in r:
             print(f'qmp {c!r}: {r["error"]}', file=sys.stderr)
         out.append(r.get('return', ''))
-    if pmemsave:	# native QMP: HMP's argument parser chokes on '-' in paths
-        r = call('pmemsave', val=pmemsave[0], size=pmemsave[1], filename=pmemsave[2])
-        if 'error' in r:
-            print(f'qmp pmemsave: {r["error"]}', file=sys.stderr)
+    if pmemsave:
+        if isinstance(pmemsave, tuple):
+            pmemsave = [pmemsave]
+        for addr, size, path in pmemsave:
+            r = call('pmemsave', val=addr, size=size, filename=path)
+            if 'error' in r:
+                print(f'qmp pmemsave {addr:#x}+{size:#x}: {r["error"]}', file=sys.stderr)
     s.close()
     return out
 
@@ -153,6 +162,8 @@ def main():
     ap.add_argument('--secs', type=float, default=20)
     ap.add_argument('--gdb', action='store_true', help='start halted, gdb stub on :1234, no timeout')
     ap.add_argument('--hmp', action='append', default=[], help='extra monitor command run after stop (repeatable), e.g. "x /8gx 0xfffffe..."')
+    ap.add_argument('--pmsave', action='append', default=[], metavar='ADDR:SIZE:FILE',
+                    help='physical memory dump written after stop (repeatable)')
     ap.add_argument('--cpu', default='cortex-a76')	# ARMv8.2 like Kryo 470, same ID_AA64MMFR0
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
@@ -200,7 +211,11 @@ def main():
         time.sleep(0.2)
     result = {'status': 'qemu_exited', 'qemu_returncode': p.returncode}
     if p.poll() is None:
-        _, regs, *extra = qmp(mon, 'stop', 'info registers', *a.hmp, pmemsave=(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw'))
+        dumps = [(FB_BASE, FB_STRIDE * FB_H, f'{out}/fb.raw')]
+        for spec in a.pmsave:
+            addr, size, path = spec.split(':', 2)
+            dumps.append((int(addr, 0), int(size, 0), path))
+        _, regs, *extra = qmp(mon, 'stop', 'info registers', *a.hmp, pmemsave=dumps)
         open(f'{out}/regs.txt', 'w').write(regs + ''.join(f'\n(qemu) {c}\n{r}' for c, r in zip(a.hmp, extra)))
         p.kill()
         p.wait()
