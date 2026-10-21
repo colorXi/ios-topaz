@@ -1,0 +1,32 @@
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -242,9 +242,18 @@
+  * @param poll Whether or not this call should poll instead of going to sleep
+  *             waiting for an interrupt when the hardware device isn't ready
+  */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++extern void sweet_log_append(const char *c, int size);  /* bsd/dev/sweet_ufs.c */
++#endif
++
+ static inline void
+ _cnputc(char c, bool poll)
+ {
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	/* civi: every character of every path ends up here, which is why the
++	 * persistent log hooks this and not only _cnputs. */
++	sweet_log_append(&c, 1);
++#endif
+ 	bool in_debugger = (kernel_debugger_entry_count > 0);
+ 	const uint32_t idx = get_cons_ops_index();
+ 
+@@ -274,10 +283,6 @@
+ _cnputs(char *c, int size, bool poll)
+ {
+ 	extern int disableConsoleOutput;
+-#if defined(ARM64_BOARD_CONFIG_SWEET)
+-	sweet_log_append(c, size);
+-#endif
+-
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}
