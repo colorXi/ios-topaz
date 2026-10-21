@@ -1,0 +1,93 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -724,12 +724,90 @@
+ 	}
+ }
+ 
++/*
++ * Read the ring back and print one page of it on the panel. The console holds
++ * about 75 rows and wraps with a clear, so print exactly one page of 60 lines;
++ * sweetlogdump=N prints the page N pages before the end (0 = the last page).
++ * When dumping we do not start the flush thread, so the previous boot's log is
++ * not overwritten by this one.
++ */
++#define SWEET_LOG_PAGE 60
++
++static void
++sweet_log_dump(uint32_t page)
++{
++	struct sweet_log_header h;
++	void *bounce = (void *)(su.dma + DMA_BOUNCE);
++	uint64_t base = su.first_block + su.nblocks - SWEET_LOG_BLOCKS;
++	uint32_t per = BOUNCE_SIZE / UFS_BLOCK;
++
++	if (ufs_read_blocks(base, 1) != 0) {
++		printf("SWEET LOG: cannot read the header\n");
++		return;
++	}
++	memcpy(&h, bounce, sizeof(h));
++	if (memcmp(h.magic, "SWEETLOG", 8) != 0 || h.size == 0 || h.size > SWEET_LOG_SIZE) {
++		printf("SWEET LOG: no log on disk\n");
++		return;
++	}
++	for (uint32_t i = 0; i < (uint32_t)(h.size / UFS_BLOCK); i += per) {
++		uint32_t n = MIN(per, (uint32_t)(h.size / UFS_BLOCK) - i);
++		if (ufs_read_blocks(base + 1 + i, n) != 0) {
++			printf("SWEET LOG: read failed at block %u\n", i);
++			return;
++		}
++		memcpy(sweet_log_ring + (uint64_t)i * UFS_BLOCK, bounce, (size_t)n * UFS_BLOCK);
++	}
++
++	uint64_t total = h.total;
++	uint64_t size = h.size;
++	uint64_t len = total < size ? total : size;
++	uint64_t start = total > size ? total % size : 0;
++	uint32_t lines = 1;
++	for (uint64_t i = 0; i < len; i++) {
++		if (sweet_log_ring[(start + i) % size] == '\n') {
++			lines++;
++		}
++	}
++	uint32_t first = 0;
++	if (page * SWEET_LOG_PAGE < lines - 1) {
++		first = lines - 1 - page * SWEET_LOG_PAGE;
++	}
++	uint32_t from = first > SWEET_LOG_PAGE ? first - SWEET_LOG_PAGE : 0;
++	printf("=== SWEET LOG page %u: lines %u..%u of %u, %llu bytes ===\n",
++	    page, from, first, lines, (unsigned long long)total);
++
++	uint32_t line = 0;
++	for (uint64_t i = 0; i < len; i++) {
++		char c = sweet_log_ring[(start + i) % size];
++		if (line >= from && line < first) {
++			if (c == '\n') {
++				printf("\n");
++			} else if (c >= 32 && c < 127) {
++				printf("%c", c);
++			}
++		}
++		if (c == '\n') {
++			line++;
++			if (line >= first) {
++				break;
++			}
++		}
++	}
++	printf("\n=== end of SWEET LOG page %u ===\n", page);
++}
++
+ static void
+ sweet_log_start(void)
+ {
+ 	uint32_t on = 1;
+ 	thread_t thread;
+ 
++	uint32_t dump = 0;
++	if (PE_parse_boot_argn("sweetlogdump", &dump, sizeof(dump))) {
++		sweet_log_dump(dump);
++		return;
++	}
+ 	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
+ 	if (!on || !su.writable || su.nblocks < 2 * SWEET_LOG_BLOCKS) {
+ 		return;
