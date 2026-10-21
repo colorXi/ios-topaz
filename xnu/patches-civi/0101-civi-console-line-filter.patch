@@ -1,0 +1,131 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -772,20 +772,23 @@
+ 	return 1;
+ }
+ 
++/*
++ * civi: launchd logs one "exec xpcproxy" line per spawn, and they arrive in
++ * bursts that scroll the 75-row panel clean within seconds -- exactly when a
++ * crash message matters. Buffer the head of each line and drop whole lines
++ * whose prefix is noise, so what stays on the panel is what we need to read.
++ */
++static const char *const fbcon_mute_prefixes[] = {
++	"exec ",
++	"ifnet_attach",
++	"skip attaching",
++	"dlil_init",
++	"[System Event]",
++};
++
+ static void
+-fbcon_transmit_data(uint8_t c)
++fbcon_emit(uint8_t c)
+ {
+-	if (c == '\r') {
+-		fbcon_col = 0;
+-		return;
+-	}
+-	if (c == '\n') {
+-		fbcon_newline();
+-		return;
+-	}
+-	if (fbcon_col >= fbcon_cols) {
+-		fbcon_newline();
+-	}
+ 	const unsigned char *glyph = iso_font + c * 16;
+ 	uint32_t x0 = fbcon_col * 8 * FBCON_SCALE, y0 = fbcon_row * 16 * FBCON_SCALE;
+ 	for (uint32_t gy = 0; gy < 16; gy++) {
+@@ -802,6 +805,92 @@
+ 	fbcon_col++;
+ }
+ 
++#define FBCON_HEAD 16
++static char fbcon_head[FBCON_HEAD];
++static uint32_t fbcon_head_len;
++static int fbcon_state;         /* 0 buffering head, 1 drawing, 2 dropping */
++
++static int
++fbcon_is_muted(const char *line, uint32_t len)
++{
++	for (unsigned int i = 0; i < sizeof(fbcon_mute_prefixes) / sizeof(fbcon_mute_prefixes[0]); i++) {
++		const char *pre = fbcon_mute_prefixes[i];
++		uint32_t n = 0, k;
++		while (pre[n] != 0) {
++			n++;
++		}
++		if (len < n) {
++			continue;
++		}
++		for (k = 0; k < n; k++) {
++			if (line[k] != pre[k]) {
++				break;
++			}
++		}
++		if (k == n) {
++			return 1;
++		}
++	}
++	return 0;
++}
++
++static void
++fbcon_put(uint8_t c)
++{
++	if (fbcon_col >= fbcon_cols) {
++		fbcon_newline();
++	}
++	fbcon_emit(c);
++}
++
++static void
++fbcon_line_feed(void)
++{
++	if (fbcon_state == 0 && fbcon_head_len != 0) {
++		if (!fbcon_is_muted(fbcon_head, fbcon_head_len)) {
++			for (uint32_t i = 0; i < fbcon_head_len; i++) {
++				fbcon_put((uint8_t)fbcon_head[i]);
++			}
++		}
++	}
++	fbcon_head_len = 0;
++	fbcon_state = 0;
++	fbcon_newline();
++}
++
++static void
++fbcon_transmit_data(uint8_t c)
++{
++	if (c == '\r') {
++		fbcon_col = 0;
++		fbcon_head_len = 0;
++		fbcon_state = 0;
++		return;
++	}
++	if (c == '\n') {
++		fbcon_line_feed();
++		return;
++	}
++	if (fbcon_state == 2) {
++		return;
++	}
++	if (fbcon_state == 0) {
++		if (fbcon_head_len < FBCON_HEAD) {
++			fbcon_head[fbcon_head_len++] = (char)c;
++		}
++		if (fbcon_head_len == FBCON_HEAD) {
++			fbcon_state = fbcon_is_muted(fbcon_head, fbcon_head_len) ? 2 : 1;
++			if (fbcon_state == 1) {
++				for (uint32_t i = 0; i < fbcon_head_len; i++) {
++					fbcon_put((uint8_t)fbcon_head[i]);
++				}
++			}
++		}
++		return;
++	}
++	fbcon_put(c);
++}
++
+ static unsigned int
+ fbcon_receive_ready(void)
+ {
