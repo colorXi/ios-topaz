@@ -1,0 +1,37 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -45,6 +45,7 @@
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
+ extern int hz;
++extern void thread_yield_to_preemption(void);
+ static void sweet_log_start(void);
+ 
+ #define REG_IS          0x20
+@@ -684,7 +685,15 @@
+ 	printf("SWEET LOG: console log to the last %u KiB of the partition (block 0x%llx)\n",
+ 	    SWEET_LOG_BLOCKS * UFS_BLOCK >> 10, base);
+ 	for (;;) {
+-		(void)tsleep(&sweet_log_chan, PZERO, "sweetlog", hz);
++		/*
++		 * civi: tsleep never wakes on this port (the timer services that
++		 * back it are the same ones that made delay() hang), so wait by
++		 * spinning in 10 ms slices and yielding between them.
++		 */
++		for (int slice = 0; slice < 100; slice++) {
++			ufs_spin_us(10000);
++			thread_yield_to_preemption();
++		}
+ 		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
+ 		if (total == flushed) {
+ 			continue;
+@@ -824,6 +833,9 @@
+ 		printf("SWEET LOG: writer thread started\n");
+ 		thread_deallocate(thread);
+ 	}
++	else {
++		printf("SWEET LOG: writer thread FAILED to start\n");
++	}
+ }
+ 
+ 
