@@ -1,0 +1,23 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -747,7 +747,11 @@
+ 	}
+ 	memcpy(&h, bounce, sizeof(h));
+ 	if (memcmp(h.magic, "SWEETLOG", 8) != 0 || h.size == 0 || h.size > SWEET_LOG_SIZE) {
+-		printf("SWEET LOG: no log on disk\n");
++		printf("SWEET LOG: no log on disk: raw %02x %02x %02x %02x %02x %02x %02x %02x total %llu size %u seq %llu at block 0x%llx\n",
++		    (unsigned char)h.magic[0], (unsigned char)h.magic[1], (unsigned char)h.magic[2],
++		    (unsigned char)h.magic[3], (unsigned char)h.magic[4], (unsigned char)h.magic[5],
++		    (unsigned char)h.magic[6], (unsigned char)h.magic[7],
++		    (unsigned long long)h.total, h.size, (unsigned long long)h.seq, (unsigned long long)base);
+ 		return;
+ 	}
+ 	for (uint32_t i = 0; i < (uint32_t)(h.size / UFS_BLOCK); i += per) {
+@@ -817,6 +821,7 @@
+ 		return;
+ 	}
+ 	if (kernel_thread_start(sweet_log_thread, NULL, &thread) == KERN_SUCCESS) {
++		printf("SWEET LOG: writer thread started\n");
+ 		thread_deallocate(thread);
+ 	}
+ }
