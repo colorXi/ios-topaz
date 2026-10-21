@@ -1,0 +1,23 @@
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -198,12 +198,19 @@
+ 		args->scalarOutputCount = 0;
+ 		break;
+ 	case kAKSGetSystem:
++		/*
++		 * civi: keybagd opens AKS (sel 0) and then stops before any further
++		 * selector. Per the sweet notes its load_devicebag() asks aks_get_system
++		 * and only loads /private/var/keybags/systembag.kb when the answer is
++		 * kIOReturnNotFound, so answer that instead of a handle it cannot use.
++		 */
+ 		if (out_scalars < 1) {
+ 			ret = kIOReturnBadArgument;
+ 			break;
+ 		}
+-		args->scalarOutput[0] = SWEET_AKS_SYSTEM_HANDLE;
++		args->scalarOutput[0] = 0;
+ 		args->scalarOutputCount = 1;
++		ret = 0xe00002f0;      /* kIOReturnNotFound */
+ 		break;
+ 	case kAKSGetLockState:
+ 		if (out_scalars < 1) {
