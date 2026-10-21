@@ -1,0 +1,45 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -102,6 +102,24 @@
+ 	bool ready;
+ } su;
+ 
++/*
++ * civi: do not call the kernel delay helper here. On this port it never
++ * returns (the panel stops on the first "letting the link settle" line), which
++ * is also why the command timeout below never fired: every iteration of the
++ * poll loop called it. Spin on mach_absolute_time instead, which advances.
++ */
++static void
++ufs_spin_us(uint64_t us)
++{
++	uint64_t t0 = mach_absolute_time();
++	uint64_t ticks = 0;
++
++	nanoseconds_to_absolutetime(us * 1000ull, &ticks);
++	while ((mach_absolute_time() - t0) < ticks) {
++		__asm__ __volatile__("isb" ::: "memory");
++	}
++}
++
+ static LCK_GRP_DECLARE(sweet_ufs_grp, "sweet_ufs");
+ static LCK_MTX_DECLARE(sweet_ufs_lock, &sweet_ufs_grp);
+ 
+@@ -190,7 +208,7 @@
+ 			    ufs_rd(REG_UTRLDBR));
+ 			return ETIMEDOUT;
+ 		}
+-		delay(1);
++		ufs_spin_us(1);
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */
+@@ -573,7 +591,7 @@
+ 	 * console printfs that made earlier builds work).
+ 	 */
+ 	printf("SWEET UFS: letting the link settle\n");
+-	delay(200000);
++	ufs_spin_us(200000);
+ 	if (!error) {
+ 		printf("SWEET UFS: [7] TEST UNIT READY\n");
+ 		static const uint8_t tur[6] = { 0x00 };
