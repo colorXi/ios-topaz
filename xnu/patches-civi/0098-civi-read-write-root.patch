@@ -1,0 +1,23 @@
+--- a/bsd/vfs/vfs_subr.c
++++ b/bsd/vfs/vfs_subr.c
+@@ -1257,6 +1257,20 @@
+ 
+ 		mp = vfs_rootmountalloc_internal(vfsp, "root_device");
+ 		mp->mnt_devvp = rootvp;
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		/*
++		 * civi: SWEET has no separate data volume -- /private/var lives on the
++		 * root -- so launchd's mount-phase-2 has nothing to mount and the boot
++		 * stops on "exec mount". rootrw=1 clears MNT_RDONLY here so the root is
++		 * writable from the first mount, which is what the port expects.
++		 */
++		{
++			uint32_t rootrw = 0;
++			if (PE_parse_boot_argn("rootrw", &rootrw, sizeof(rootrw)) && rootrw) {
++				mp->mnt_flag &= ~MNT_RDONLY;
++			}
++		}
++#endif
+ 
+ 		if (vfsp->vfc_mountroot) {
+ 			error = (*vfsp->vfc_mountroot)(mp, rootvp, ctx);
