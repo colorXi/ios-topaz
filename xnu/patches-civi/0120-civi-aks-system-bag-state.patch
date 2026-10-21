@@ -1,0 +1,40 @@
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -183,6 +183,9 @@
+ 	uint32_t out_struct = sweet_aks_struct_out_size(args);
+ 	uint64_t arg0 = in_scalars > 0 ? args->scalarInput[0] : 0;
+ 
++/* Set once keybagd has loaded and installed the system bag. */
++static bool sweet_aks_bag_loaded;
++
+ 	switch (selector) {
+ 	case kAKSOpen:
+ 	case kAKSUnloadBag:
+@@ -196,6 +199,7 @@
+ 	case kAKSUnloadSessionBags:
+ 	case kAKSNotifyStateSet:
+ 		args->scalarOutputCount = 0;
++		sweet_aks_bag_loaded = true;
+ 		break;
+ 	case kAKSGetSystem:
+ 		/*
+@@ -210,7 +214,10 @@
+ 		}
+ 		args->scalarOutput[0] = 0;
+ 		args->scalarOutputCount = 1;
+-		ret = 0xe00002f0;      /* kIOReturnNotFound */
++		ret = sweet_aks_bag_loaded ? 0 : 0xe00002f0;
++		if (sweet_aks_bag_loaded) {
++			args->scalarOutput[0] = SWEET_AKS_SYSTEM_HANDLE;
++		}
+ 		break;
+ 	case kAKSCreateBag:
+ 		/* civi: bag creation/saving are stubs too; Unsupported is fatal here. */
+@@ -234,6 +241,7 @@
+ 		 */
+ 		if (out_scalars < 1) {
+ 			ret = kIOReturnBadArgument;
++		sweet_aks_bag_loaded = true;
+ 			break;
+ 		}
+ 		args->scalarOutput[0] = 1;
