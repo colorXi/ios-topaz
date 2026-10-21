@@ -1,0 +1,26 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -172,14 +172,11 @@
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 
+-	printf("SWEET UFS:   scsi 0x%02x len %u, ringing the doorbell\n", cdb[0], len);
+ 	ufs_wr(REG_UTRLDBR, 1);
+-	printf("SWEET UFS:   utrldbr reads 0x%x\n", ufs_rd(REG_UTRLDBR));
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+ 	uint64_t t0 = mach_absolute_time();
+ 	deadline += t0;
+-	printf("SWEET UFS:   t0 %llu deadline %llu\n", t0, deadline);
+ 	uint32_t spins = 0;
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
+ 		/* civi: the absTime check alone never fired on the first large
+@@ -197,8 +194,6 @@
+ 	}
+ 	__builtin_arm_dsb(0xf);
+ 	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */
+-	printf("SWEET UFS:   command 0x%02x complete: utrldbr 0x%x is 0x%x ocs 0x%x\n",
+-	    cdb[0], ufs_rd(REG_UTRLDBR), ufs_rd(REG_IS), utrd->dw2 & 0xff);
+ 
+ 	dma_sync(DMA_UTRL, sizeof(*utrd));
+ 	dma_sync(DMA_UCD, sizeof(*ucd));
