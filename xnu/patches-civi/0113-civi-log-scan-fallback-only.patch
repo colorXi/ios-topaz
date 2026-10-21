@@ -1,0 +1,11 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -784,7 +784,7 @@
+ 		while (scan > 0 && sweet_log_ring[scan - 1] == 0) {
+ 			scan--;
+ 		}
+-		if (scan > total) {
++		if (total == 0 && scan > 0) {
+ 			printf("SWEET LOG: header total %llu but the ring ends at %llu\n",
+ 			    (unsigned long long)total, (unsigned long long)scan);
+ 			total = scan;
