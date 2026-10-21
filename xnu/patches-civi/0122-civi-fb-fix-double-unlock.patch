@@ -1,0 +1,45 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -212,20 +212,6 @@
+ 	AppleCLCD *fb = (AppleCLCD *)owner;
+ 	uint64_t now = mach_absolute_time();
+ 	uint64_t count = ++fb->fVsyncCount;
+-	/* civi: console-independent liveness marker: a 32x32 square at 8,8
+-	 * toggles once a second. If it blinks, the kernel, the workloop and
+-	 * the panel scanout are alive even when the console has gone quiet. */
+-	if (fb->fBlink && (count % 60) == 0) {
+-		static bool blink_on;
+-		uint32_t color = blink_on ? 0xffffffffu : 0xff000000u;
+-		blink_on = !blink_on;
+-		for (uint32_t y = 8; y < 40; y++) {
+-			volatile uint32_t *row = (volatile uint32_t *)(fb->fPixels + (uint64_t)y * fb->fRowBytes);
+-			for (uint32_t x = 8; x < 40; x++) {
+-				row[x] = color;
+-			}
+-		}
+-	}
+ 	uint64_t values[6] = {
+ 		(uint32_t)count, (uint32_t)(count >> 32),
+ 		(uint32_t)now, (uint32_t)(now >> 32),
+@@ -256,7 +242,20 @@
+ 			IOFree(rec, SWEET_FB_SWAP_REC_SIZE);
+ 		}
+ 	}
+-	IOLockUnlock(fb->fLock);
++	/* civi: console-independent liveness marker: a 32x32 square at 8,8
++	 * toggles once a second. If it blinks, the kernel, the workloop and
++	 * the panel scanout are alive even when the console has gone quiet. */
++	if (fb->fBlink && (count % 60) == 0) {
++		static bool blink_on;
++		uint32_t color = blink_on ? 0xffffffffu : 0xff000000u;
++		blink_on = !blink_on;
++		for (uint32_t y = 8; y < 40; y++) {
++			volatile uint32_t *row = (volatile uint32_t *)(fb->fPixels + (uint64_t)y * fb->fRowBytes);
++			for (uint32_t x = 8; x < 40; x++) {
++				row[x] = color;
++			}
++		}
++	}
+ 	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
+ }
+ 
