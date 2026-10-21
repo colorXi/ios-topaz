@@ -1,0 +1,28 @@
+--- a/pexpert/arm/pe_serial.c
++++ b/pexpert/arm/pe_serial.c
+@@ -735,9 +735,23 @@
+ fbcon_newline(void)
+ {
+ 	fbcon_col = 0;
+-	fbcon_row = (fbcon_row + 1) % fbcon_rows;
++	fbcon_row++;
++	if (fbcon_row >= fbcon_rows) {
++		/*
++		 * sweet: wrapping mixes the oldest and newest lines on screen, so a
++		 * photo of the panel cannot tell what the last line was. The panel is
++		 * the only debug channel on these boards: start a clean screen at
++		 * every wrap so the visible text is always the last fbcon_rows lines.
++		 */
++		for (uint32_t r = 0; r < fbcon_rows; r++) {
++			fbcon_clear_row(r);
++		}
++		fbcon_row = 0;
++	}
+ 	fbcon_clear_row(fbcon_row);
+-	fbcon_clear_row((fbcon_row + 1) % fbcon_rows);
++	if (fbcon_row + 1 < fbcon_rows) {
++		fbcon_clear_row(fbcon_row + 1);
++	}
+ }
+ 
+ static void
