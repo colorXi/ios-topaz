@@ -1,0 +1,14 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -495,7 +495,10 @@
+ #if DEBUG_BSDINIT
+ #define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
+ #else
+-#define bsd_init_kprintf(x, ...)
++/* civi: the stage script that flips DEBUG_BSDINIT does not reach this build,
++ * so make the no-op branch print instead. Each step of bsd_init() then names
++ * itself on the panel, which is the only way to see where it stops. */
++#define bsd_init_kprintf(x, ...) kprintf("bsd_init: " x, ## __VA_ARGS__)
+ #endif
+ 
+ 	throttle_init();
