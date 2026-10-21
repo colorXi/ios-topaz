@@ -1,0 +1,40 @@
+--- a/iokit/Kernel/IOStartIOKit.cpp
++++ b/iokit/Kernel/IOStartIOKit.cpp
+@@ -69,6 +69,10 @@
+ #include <kern/clock.h>
+ #include <sys/time.h>
+ 
++/* civi: no included header declares printf, and the panel is the only
++ * debug channel, so draw the markers through it. */
++extern "C" int printf(const char *fmt, ...);
++
+ void
+ IOKitInitializeTime( void )
+ {
+@@ -79,15 +83,26 @@
+ 
+ // RTC is not present on this target
+ #ifndef BCM2837
++	/*
++	 * civi: there is no IORTC on this board either, and bsd_init() stops dead
++	 * right after printing "calling IOKitInitializeTime". This wait is the only
++	 * blocking call here, and its 30 s timeout rides on timer services that are
++	 * not proven yet this early in the boot. Skip it, as the BCM2837 port does.
++	 */
++	printf("civi: IOKitInitializeTime: no IORTC here, skipping the wait\n");
++#if 0
+ 	IOService::waitForService(
+ 		IOService::resourceMatching("IORTC"), &t );
+ #endif
++#endif
+ #if defined(__i386__) || defined(__x86_64__)
+ 	IOService::waitForService(
+ 		IOService::resourceMatching("IONVRAM"), &t );
+ #endif
+ 
++	printf("civi: IOKitInitializeTime: clock_initialize_calendar...\n");
+ 	clock_initialize_calendar();
++	printf("civi: IOKitInitializeTime: done\n");
+ }
+ 
+ void
