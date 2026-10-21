@@ -1,0 +1,17 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -566,6 +566,14 @@
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+ 	printf("SWEET UFS: [5] ufs_take_over_host...\n"); error = ufs_take_over_host(); printf("SWEET UFS: [6] ufs_take_over_host -> %d\n", error);
++	/*
++	 * civi: the bootloader has just used this host. Give the link time to
++	 * settle before the first command: without this the first TEST UNIT READY
++	 * can be rung and never answered (it was only the millisecond spent in the
++	 * console printfs that made earlier builds work).
++	 */
++	printf("SWEET UFS: letting the link settle\n");
++	delay(200000);
+ 	if (!error) {
+ 		printf("SWEET UFS: [7] TEST UNIT READY\n");
+ 		static const uint8_t tur[6] = { 0x00 };
