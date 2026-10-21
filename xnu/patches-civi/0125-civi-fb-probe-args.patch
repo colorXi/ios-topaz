@@ -1,0 +1,22 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -194,6 +194,8 @@
+ 			fBlink = true;
+ 		}
+ 	}
++	IOLog("SWEET FB: args hz=%u blink=%u vsync_us=%u\n",
++	    hz, fBlink ? 1 : 0, SWEET_FB_VSYNC_US);
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 
+@@ -245,8 +247,8 @@
+ 	/* civi: console-independent liveness marker: a 32x32 square at 8,8
+ 	 * toggles once a second. If it blinks, the kernel, the workloop and
+ 	 * the panel scanout are alive even when the console has gone quiet. */
+-	if (fb->fBlink && (count % 600) == 0) {
+-		IOLog("SWEET FB: vsync %llu (blink marker alive)\n", (unsigned long long)count);
++	if ((count % 300) == 0) {
++		IOLog("SWEET FB: vsync %llu\n", (unsigned long long)count);
+ 	}
+ 	if (fb->fBlink && (count % 60) == 0) {
+ 		static bool blink_on;
