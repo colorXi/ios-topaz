@@ -1,0 +1,14 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -729,7 +729,10 @@
+ 			printf("SWEET LOG: write failed (%d), retrying\n", error);
+ 			continue;
+ 		}
+-		printf("SWEET LOG: flush %llu total %llu\n", (unsigned long long)++seq, (unsigned long long)total);
++		if ((seq % 50) == 0) {
++			printf("SWEET LOG: flush %llu total %llu\n",
++			    (unsigned long long)seq, (unsigned long long)total);
++		}
+ 		flushed = total;
+ 	}
+ }
