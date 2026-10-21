@@ -1,0 +1,24 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -690,7 +690,7 @@
+ 		 * back it are the same ones that made delay() hang), so wait by
+ 		 * spinning in 10 ms slices and yielding between them.
+ 		 */
+-		for (int slice = 0; slice < 100; slice++) {
++		for (int slice = 0; slice < 20; slice++) {
+ 			ufs_spin_us(10000);
+ 			thread_yield_to_preemption();
+ 		}
+@@ -726,9 +726,10 @@
+ 		}
+ 		lck_mtx_unlock(&sweet_ufs_lock);
+ 		if (error) {
+-			printf("SWEET LOG: write failed (%d), stopping\n", error);
+-			return;
++			printf("SWEET LOG: write failed (%d), retrying\n", error);
++			continue;
+ 		}
++		printf("SWEET LOG: flush %llu total %llu\n", (unsigned long long)++seq, (unsigned long long)total);
+ 		flushed = total;
+ 	}
+ }
