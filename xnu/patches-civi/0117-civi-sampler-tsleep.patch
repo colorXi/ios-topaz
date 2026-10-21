@@ -1,6 +1,6 @@
 --- a/bsd/dev/sweet_sample.c
 +++ b/bsd/dev/sweet_sample.c
-@@ -27,19 +27,17 @@
+@@ -27,19 +27,18 @@
   * civi: tsleep never wakes on this port (see sweet_ufs.c), so wait in 10 ms
   * slices and yield between them.
   */
@@ -24,6 +24,7 @@
 -		}
 -		thread_yield_to_preemption();
 -	}
++	extern int hz;
 +	(void)tsleep(&sweet_sample_chan, PZERO, "sweetsmp", seconds * hz);
  }
  
