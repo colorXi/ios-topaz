@@ -1,0 +1,17 @@
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -73,6 +73,14 @@
+ {
+ 	char name[32];
+ 	proc_name(proc_pid(p), name, sizeof(name));
++	/*
++	 * civi: "sweetsample=*" lists every process once, so a stalled boot
++	 * can say which daemons actually exist.
++	 */
++	if (sweet_sample_names[0] == '*') {
++		printf("PS %s[%d]\n", name, proc_pid(p));
++		return PROC_RETURNED;
++	}
+ 	if (sweet_sample_wanted(name)) {
+ 		task_t task = proc_task(p);
+ 		if (task != TASK_NULL) {
