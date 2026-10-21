@@ -1,0 +1,16 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -249,9 +249,11 @@
+ 		static bool blink_on;
+ 		uint32_t color = blink_on ? 0xffffffffu : 0xff000000u;
+ 		blink_on = !blink_on;
+-		for (uint32_t y = 8; y < 40; y++) {
++		/* Centred and large: (8,8) sits inside the panel's rounded corner. */
++		uint32_t cx = fb->fWidth / 2, cy = fb->fHeight / 2;
++		for (uint32_t y = cy - 48; y < cy + 48; y++) {
+ 			volatile uint32_t *row = (volatile uint32_t *)(fb->fPixels + (uint64_t)y * fb->fRowBytes);
+-			for (uint32_t x = 8; x < 40; x++) {
++			for (uint32_t x = cx - 48; x < cx + 48; x++) {
+ 				row[x] = color;
+ 			}
+ 		}
