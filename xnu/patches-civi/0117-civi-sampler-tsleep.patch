@@ -1,0 +1,30 @@
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -27,19 +27,17 @@
+  * civi: tsleep never wakes on this port (see sweet_ufs.c), so wait in 10 ms
+  * slices and yield between them.
+  */
++/*
++ * civi: tsleep does work here (the first sampler build took its samples with
++ * it); it was only delay() that never returned. Spinning in a kernel thread
++ * starves the single CPU and stalls the boot, so go back to a real wait.
++ */
++static int sweet_sample_chan;
++
+ static void
+ sweet_sample_wait(int seconds)
+ {
+-	uint64_t ticks = 0;
+-
+-	nanoseconds_to_absolutetime(10000000ull, &ticks);
+-	for (int i = 0; i < seconds * 100; i++) {
+-		uint64_t t0 = mach_absolute_time();
+-		while ((mach_absolute_time() - t0) < ticks) {
+-			__asm__ __volatile__("isb" ::: "memory");
+-		}
+-		thread_yield_to_preemption();
+-	}
++	(void)tsleep(&sweet_sample_chan, PZERO, "sweetsmp", seconds * hz);
+ }
+ 
+ extern task_t proc_task(proc_t);
