@@ -1,0 +1,36 @@
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -212,6 +212,33 @@
+ 		args->scalarOutputCount = 1;
+ 		ret = 0xe00002f0;      /* kIOReturnNotFound */
+ 		break;
++	case kAKSCreateBag:
++		/* civi: bag creation/saving are stubs too; Unsupported is fatal here. */
++		if (out_scalars < 1) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		args->scalarOutput[0] = 2;
++		args->scalarOutputCount = 1;
++		break;
++	case kAKSSaveBag:
++		args->scalarOutputCount = 0;
++		break;
++	case kAKSLoadBag:
++		/*
++		 * civi: keybagd loads /private/var/keybags/systembag.kb through this
++		 * selector and treats kIOReturnUnsupported as a fatal keybag error,
++		 * which halts the boot in MKB_INIT ("REBOOTING INTO RECOVERY MODE").
++		 * Accept the bag and hand back a handle; everything else about the
++		 * keybag is a stub anyway.
++		 */
++		if (out_scalars < 1) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		args->scalarOutput[0] = 1;
++		args->scalarOutputCount = 1;
++		break;
+ 	case kAKSGetLockState:
+ 		if (out_scalars < 1) {
+ 			ret = kIOReturnBadArgument;
