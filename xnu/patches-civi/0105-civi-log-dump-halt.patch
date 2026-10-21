@@ -1,0 +1,13 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -806,6 +806,10 @@
+ 	uint32_t dump = 0;
+ 	if (PE_parse_boot_argn("sweetlogdump", &dump, sizeof(dump))) {
+ 		sweet_log_dump(dump);
++		printf("SWEET LOG: dumped, stopping here so it stays on the panel\n");
++		for (;;) {
++			__asm__ __volatile__("wfi");
++		}
+ 		return;
+ 	}
+ 	PE_parse_boot_argn("sweetlog", &on, sizeof(on));
