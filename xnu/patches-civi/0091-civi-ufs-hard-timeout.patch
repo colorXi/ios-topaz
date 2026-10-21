@@ -1,0 +1,26 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -165,11 +165,20 @@
+ 	printf("SWEET UFS:   utrldbr reads 0x%x\n", ufs_rd(REG_UTRLDBR));
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+-	deadline += mach_absolute_time();
++	uint64_t t0 = mach_absolute_time();
++	deadline += t0;
++	printf("SWEET UFS:   t0 %llu deadline %llu\n", t0, deadline);
++	uint32_t spins = 0;
+ 	while (ufs_rd(REG_UTRLDBR) & 1) {
+-		if (mach_absolute_time() > deadline) {
++		/* civi: the absTime check alone never fired on the first large
++		 * transfer, so also give up after a fixed number of polls and dump
++		 * the host state -- that is the only way to separate a hung bus
++		 * from a halted controller. */
++		if (mach_absolute_time() > deadline || ++spins > 2000000u) {
+ 			ufs_wr(REG_UTRLCLR, ~1u);
+-			printf("SWEET UFS: command 0x%02x timed out\n", cdb[0]);
++			printf("SWEET UFS:   command 0x%02x gave up after %u spins: now %llu hcs 0x%x is 0x%x utrldbr 0x%x\n",
++			    cdb[0], spins, mach_absolute_time(), ufs_rd(REG_HCS), ufs_rd(REG_IS),
++			    ufs_rd(REG_UTRLDBR));
+ 			return ETIMEDOUT;
+ 		}
+ 		delay(1);
