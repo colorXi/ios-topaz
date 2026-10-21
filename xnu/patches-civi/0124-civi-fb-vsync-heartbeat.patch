@@ -1,0 +1,12 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -245,6 +245,9 @@
+ 	/* civi: console-independent liveness marker: a 32x32 square at 8,8
+ 	 * toggles once a second. If it blinks, the kernel, the workloop and
+ 	 * the panel scanout are alive even when the console has gone quiet. */
++	if (fb->fBlink && (count % 600) == 0) {
++		IOLog("SWEET FB: vsync %llu (blink marker alive)\n", (unsigned long long)count);
++	}
+ 	if (fb->fBlink && (count % 60) == 0) {
+ 		static bool blink_on;
+ 		uint32_t color = blink_on ? 0xffffffffu : 0xff000000u;
