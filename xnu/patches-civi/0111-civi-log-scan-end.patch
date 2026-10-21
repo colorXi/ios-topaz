@@ -1,0 +1,26 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -777,6 +777,23 @@
+ 	}
+ 
+ 	uint64_t total = h.total;
++	/*
++	 * civi: the header on disk only ever described the first flush (total stayed
++	 * at ~7.5 KiB while the writer kept cycling), so do not trust it: with the
++	 * ring far from wrapping, the data itself says where it ends. Scan back over
++	 * the zeroed tail and take whichever end is larger.
++	 */
++	{
++		uint64_t scan = h.size;
++		while (scan > 0 && sweet_log_ring[scan - 1] == 0) {
++			scan--;
++		}
++		if (scan > total) {
++			printf("SWEET LOG: header total %llu but the ring ends at %llu\n",
++			    (unsigned long long)total, (unsigned long long)scan);
++			total = scan;
++		}
++	}
+ 	uint64_t size = h.size;
+ 	uint64_t len = total < size ? total : size;
+ 	uint64_t start = total > size ? total % size : 0;
