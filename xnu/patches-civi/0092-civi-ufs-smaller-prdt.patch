@@ -1,0 +1,17 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -53,7 +53,13 @@
+ 
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
+-#define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
++/*
++ * civi: the first 640 KiB read is the first transfer that needs more than one
++ * PRDT entry, and it never completes while the 4 KiB GPT reads before it do.
++ * Many UFSHCI implementations cap a single PRDT entry well below the 18-bit
++ * field the spec allows, so keep every entry shallow and let the count grow.
++ */
++#define PRDT_CHUNK      (64u << 10)             /* PRDT byte count field: 18 bits */
+ #define PRDT_MAX        (BOUNCE_SIZE / PRDT_CHUNK)
+ #define CMD_TIMEOUT_NS  (5ull * NSEC_PER_SEC)
+ 
