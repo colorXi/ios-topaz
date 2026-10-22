@@ -1,0 +1,47 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -38,6 +38,8 @@
+ #include <IOKit/IOLib.h>
+ #include <IOKit/IOLocks.h>
+ #include <IOKit/IOWorkLoop.h>
++#include <kern/thread_call.h>
++#include <kern/clock.h>
+ #include <IOKit/IOTimerEventSource.h>
+ #include <IOKit/system.h>
+ #include <pexpert/pexpert.h>
+@@ -88,6 +90,7 @@
+ 
+ 	IOWorkLoop         *fWorkLoop;
+ 	IOTimerEventSource *fVsync;
++	thread_call_t  fTestCall;   /* civi: thread_call self test */
+ 	uint64_t            fVsyncCount;
+ 
+ 	static void vsyncFired(OSObject *owner, IOTimerEventSource *sender);
+@@ -142,6 +145,12 @@
+ };
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
++static void
++sweet_fb_timer_test(thread_call_param_t p0, thread_call_param_t p1)
++{
++	IOLog("SWEET FB: thread_call fired (p0 %p p1 %p)\n", p0, p1);
++}
++
+ 
+ bool
+ AppleCLCD::start(IOService *provider)
+@@ -198,6 +207,14 @@
+ 	    hz, fBlink ? 1 : 0, SWEET_FB_VSYNC_US);
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
++	/* civi: does thread_call fire at all on this port? */
++	fTestCall = thread_call_allocate(&sweet_fb_timer_test, this);
++	if (fTestCall != NULL) {
++		AbsoluteTime dl;
++		clock_interval_to_deadline(2, kSecondScale, &dl);
++		IOLog("SWEET FB: timer test armed, enter %d\n",
++		    thread_call_enter_delayed(fTestCall, dl));
++	}
+ 
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+ 	setProperty("external", false);
