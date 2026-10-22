@@ -8,7 +8,7 @@
 +static volatile uint32_t *sweet_fb_paint_base;
 +static uint32_t sweet_fb_paint_w, sweet_fb_paint_h, sweet_fb_paint_stride;
 +
-+void
++extern "C" void
 +sweet_fb_paint_marker(int on)
 +{
 +	volatile uint32_t *base = sweet_fb_paint_base;
