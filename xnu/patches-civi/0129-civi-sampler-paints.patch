@@ -1,0 +1,52 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -145,6 +145,27 @@
+ };
+ 
+ /* civi: exported so the (tsleep based) process sampler can report them. */
++/* civi: the sampler paints this directly; it does not go through the console. */
++static volatile uint32_t *sweet_fb_paint_base;
++static uint32_t sweet_fb_paint_w, sweet_fb_paint_h, sweet_fb_paint_stride;
++
++void
++sweet_fb_paint_marker(int on)
++{
++	volatile uint32_t *base = sweet_fb_paint_base;
++	if (base == NULL) {
++		return;
++	}
++	uint32_t cx = sweet_fb_paint_w / 2, cy = sweet_fb_paint_h / 2;
++	uint32_t color = on ? 0xffffffffu : 0xffff0000u;
++	for (uint32_t y = cy - 48; y < cy + 48; y++) {
++		volatile uint32_t *row = base + (uint64_t)y * sweet_fb_paint_stride;
++		for (uint32_t x = cx - 48; x < cx + 48; x++) {
++			row[x] = color;
++		}
++	}
++}
++
+ uint64_t sweet_fb_status_vsync;
+ uint32_t sweet_fb_status_started;
+ uint32_t sweet_fb_status_swaps;
+@@ -254,6 +275,10 @@
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	sweet_fb_status_started = 1;
++	sweet_fb_paint_base = (volatile uint32_t *)fPixels;
++	sweet_fb_paint_w = fWidth;
++	sweet_fb_paint_h = fHeight;
++	sweet_fb_paint_stride = fRowBytes / 4;
+ 	return true;
+ }
+ 
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -100,6 +100,8 @@
+ 	}
+ 	sweet_sample_wait(90);
+ 	for (int i = 0; i < 10; i++) {
++		extern void sweet_fb_paint_marker(int on);
++		sweet_fb_paint_marker(i & 1);
+ 		printf("SMP --- sample %d\n", i);
+ 		{
+ 			extern uint64_t sweet_fb_status_vsync;
