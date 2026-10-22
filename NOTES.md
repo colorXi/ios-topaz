@@ -2,6 +2,570 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
+### >>> CIVI 2026-10-22 09:30: MKB_INIT completes - the keybag is loaded <<<
+
+Thanks to 0118/0119/0120 the keybag conversation now finishes on the phone:
+
+```
+*****IN MKB_INIT*****
+SWEET AKS: keybagd sel 0  -> 0x0
+SWEET AKS: keybagd sel 14 -> 0x0          (handle 0, as UniXNU's NativeKeyStoreEvents advises)
+SWEET AKS: keybagd sel 14 -> 0x0
+MKB_INIT: mount is with NO CPROTECT:0x1480d000 on (/private/var/)
+MKB_INIT: mount point (/private/var/) does not support Data Protect
+MKB_INIT: System Keybag Loaded
+MKB_INIT: Could not get options entry from the device tree
+Unable to set /private/var//tmp to class D
+****** DONE MKB_INIT ****
+com.apple.xpc.launchd (usermanagerd) <Notice>: Doing boot task
+```
+
+So the keybag gate is closed. The boot now stops at the **usermanagerd** boot task, and at that
+point the console goes silent - the sampler (which prints every 120 s from a tsleep wait that
+is known to work) prints nothing either. `0129` makes the sampler paint a 96x96 square into
+the panel memory instead of printing, to tell a wedged console from a wedged system.
+
+Cross-checked against UniXNU (github.com/UniXNU, the Xiaomi Pad 6 generation port): their
+`NativeKeyStoreEvents` answers 14 with handle 0 and success and notes keybagd "then needs no
+systembag.kb"; 0/4/5/9/12/13/26/27/55/101/102 succeed with no outputs, 7 returns lock state
+bit 2, 17/35 return a DER state set. Our stub now matches that set. Their display driver uses
+the same IOTimerEventSource pattern we do (work-loop timer, armed per client), so the vsync
+approach itself is sound.
+
+### >>> CIVI 2026-10-21 20:30: final verification of today's patch set <<<
+
+Checked against the CI logs of the last build (run 39597142707):
+
+- **No patch from `xnu/patches-civi/` is skipped** (the 24 "Skipping patch" lines are all
+  `dxb/patches/` - the original sweet set, unchanged since before today).
+- The `3_Sanity check the civi patch set` step lists 0087..0125 each with count 0.
+- The built kernel really contains the new probes: `SWEET FB: args hz=%u blink=%u vsync_us=%u`,
+  `SWEET FB: vsync %llu`, `SWEET FB: swap %u layer`, `SWEET FB: display %s`,
+  and `sweet_aks_bag_loaded` are all present in `ci-kernel37/kernel.development.sweet`.
+- `civi-probe.img`'s command line ends with `... sweetlog=0 sweetsample=- sweetfb_blink=1`,
+  so the probes are enabled in the image that is on the phone.
+
+**First thing to read next time:** the `SWEET FB: args ...` line (does a boot arg arrive at
+all?) and then whether `SWEET FB: vsync N` appears (does the IOTimerEventSource tick?). Those
+two lines decide whether the display pump has ever run; `SWEET FB: swap ...` appearing would
+mean userland finally presented.
+
+### >>> CIVI 2026-10-21 20:20: boot tasks now run in sequence and stop in tzinit <<<
+
+The `0122` lock fix plus `0125` probes changed the picture: the boot now walks boot tasks
+one after another instead of stopping at the first one:
+
+```
+xpcroleaccountd: Doing boot task
+init_featureflags: Doing boot task
+auearlyboot: Starting Early Boot ... No Early Boot Accessories ... Exiting Early Boot
+tzinit: Doing boot task
+tzinit: Bad zoneinfo link: No such file or directory
+tzinit: Invalid current symlinks; resetting to system partition: No such file or directory
+        <- stops here
+```
+
+Note the pair with the earlier `dc_reset: /tmp: Invalid argument`: **both stops are
+filesystem operations on symlinks/directories under /private/var**. That is the thread to
+pull next - either HFS+ refuses (`EINVAL` from dc_reset) or wedges (`tzinit`) on symlink
+replace/unlink, and launchd's boot tasks do that constantly.
+
+Also from this session: the `SWEET FB: args hz=.. blink=..` / `SWEET FB: vsync N` probes
+are in `0125` - the next boot should read them to settle whether the fb boot args arrive and
+whether the vsync timer ticks; the first 16 userland presents would print
+`SWEET FB: swap ...` and that line has still never appeared.
+
+### >>> CIVI 2026-10-21 20:15: no userland swap has ever reached the panel <<<
+
+Chasing the "black screen" produced a decisive negative: the first 16 presents are logged as
+`SWEET FB: swap %u layer %u surface %u ...` and **that line has never appeared on the panel
+in any boot**. So userland has never presented a frame at all; the black screen is not a
+presented black frame. It is the console going quiet right after a wrap-clear (0087 clears
+the whole panel on scroll), i.e. the boot simply stops printing and the screen stays cleared.
+
+Two more findings from the same session:
+- the liveness square is invisible even when centred at 96x96 (0121/0123), and
+- the vsync heartbeat (0124, one line every 600 ticks with `sweetfb_blink=1`) never printed
+  either, so the AppleCLCD vsync timer very likely is not firing at all in these boots.
+  That also means `present()` would never run even if a client called swap.
+- IOLockUse: 0122 removed a real double `IOLockUnlock(fb->fLock)` in vsyncFired (0097 left
+  it behind), which was corrupting the lock; keep that fix.
+
+**So the port never actually had a working display pump.** Next session's first task is to
+get the IOTimerEventSource to fire (check `fWorkLoop->addEventSource` return, that the
+workloop thread runs, and that `setTimeoutUS` is re-armed) and to confirm with the vsync
+heartbeat before touching anything userland.
+
+### >>> CIVI 2026-10-21 19:45: userland presents frames (black), console then goes silent <<<
+
+Two runs of `civi-aks4/live` (0120, AKS state) scroll and then the panel goes **completely
+black**. That is the first time the panel is not kernel text: something userland called
+AppleCLCD's present path (0100/0102 + 0097). The frame is black because nothing has been
+drawn into the surface yet.
+
+After that the console stops updating even though the sampler (`sweetsample=*`, `tsleep`
+based, 120 s cadence) should keep printing `SMP --- sample N` / `PS name[pid]`. Two possible
+readings, and they need one more instrument to separate:
+1. The system is idle with a black UI and simply has nothing to log (then SpringBoard is
+   up but has not drawn - the GPU-less CoreAnimation wall), or
+2. the console is wedged (a thread holding the console lock inside an FB write), which
+   would also freeze every later log line and the sampler.
+
+Next instrument: log the present itself (`SWEET FB: swap ...` already prints the first 16)
+together with the process name, and boot with `sweetfb_noconsole=0` so the console keeps
+drawing over frames; if those lines appear and then stop, the console lock is the problem.
+
+**Where the port stands after today:** iOS 16.7.16 userland boots on the Civi - launchd
+runs, boot tasks walk through obliterator / detect-installed-roots / commit-boot-mode /
+mount-phase-2 / init-with-data-volume / MSUEarlyBootTask, the keybag conversation is
+implemented selector by selector, and userland has presented at least one frame through
+AppleCLCD. What is still missing is a drawn SpringBoard frame (the GPU-less CoreAnimation
+path) and a console/log channel that survives it.
+
+### >>> CIVI 2026-10-21 19:35: the keybag chain, selector by selector <<<
+
+Patch **0118/0119/0120** finally made the keybag conversation visible and mostly correct.
+The panel now shows, in order:
+
+```
+****** IN MKB_INIT ****
+SWEET AKS: keybagd sel 0  -> 0x0            open
+SWEET AKS: keybagd sel 14 -> 0xe00002f0    get_system: NotFound -> load the file
+MKB_INIT: Loading System KeyBag
+SWEET AKS: keybagd sel 6  -> 0x0            load_bag (was kIOReturnUnsupported = fatal)
+SWEET AKS: keybagd sel 5  -> 0x0            set_system
+SWEET AKS: keybagd sel 4  -> 0x0            unload_bag
+SWEET AKS: keybagd sel 14 -> 0x0            get_system again, now with the handle
+```
+
+Before 0119 the whole boot was silently ending in
+`MKB_INIT: FATAL KEYBAG ERROR ... REBOOTING INTO RECOVERY MODE` - every "keybag hang" was
+really that halt, which is also why the same image stopped at different tasks run to run.
+
+**Still open:** with 0120 the boot varies again (one run went on to present frames and the
+panel went black - the first userland present!), another stopped at `keybagd sel 0` with no
+return, so there may be a deadlock in the AKS user client or the console lock. The next
+value to add is the rest of the keybag selector set that keybagd uses after get_system
+(unlock_bag 12, lock_bag 13, assert_hold/drop 26/27, notify 102/103 are already stubs) and
+to make every AKS call log even when it blocks.
+
+**Black panel = progress:** the first run of `civi-aks4.img` scrolled and then went fully
+black, i.e. something userland PRESENTED a frame through AppleCLCD (0100/0102 path). It is
+black because SpringBoard has not drawn yet, but the display path is exercised.
+
+### >>> CIVI 2026-10-21 19:05: boot now walks most launchd boot tasks; last stop is MSUEarlyBootTask <<<
+
+With `0118` (aks_get_system -> kIOReturnNotFound) the boot gets much further, though
+which task it stops on varies between runs. Best run (`civi-aks2.img`, `sweetsample=*`):
+
+```
+obliterator: No obliteration needed, continue booting, returning 0
+detect-installed-roots: No cookie from system volume
+commit-boot-mode: boot-mode committed: (null)
+restore-datapartition: optional boot task not present
+mount-phase-2: failed to get filesystem info (x2)
+mount: data volume missing, but not required in env: 0        <- passes
+BindFS bindfs_mount: lookup of /private/var/hardware/Pearl/... failed error: 2  (non fatal)
+BindFS bindfs_mount: lookup of /private/var/hardware/FactoryData/... failed error: 2
+init-with-data-volume: Doing boot task
+MSUEarlyBootTask: Doing boot task        <- stops here, 20+ minutes
+```
+
+Other runs stop earlier (keybag / xpcroleaccountd). The variation itself is a lead: the
+same image reaches different points, so something is timing dependent (the UFS retry path,
+the console, or a daemon racing launchd).
+
+**What is left to make a picture appear:** get past `MSUEarlyBootTask`, then backboardd has
+to open AppleCLCD and SpringBoard has to present. The IOMFB path is already exercised by
+the design (0046/0097/0100/0102) but nothing userland has called it yet.
+
+**Tooling that works and how to use it:**
+- `sweetsample=*` -> process list, `sweetsample=launchd` -> user stacks, both at 90 s and
+  every 120 s after (uses tsleep, which works; never spin for seconds in a kernel thread).
+- `sweetnull=backboardd,SpringBoard`, `sweetscan=...`, `sweetiolog=...` for daemon output.
+- console line filter (0101) hides the exec storm; `SWEET AKS:` lines name every keystore
+  selector with its return value.
+
+### >>> CIVI 2026-10-21 18:25: launchd now walks its boot tasks and stops at xpcroleaccountd <<<
+
+Best userland observation so far (`civi-l1.img`: latest kernel, `sweetlog=0`,
+`sweetsample=launchd` - the sampler waits with `tsleep`, which works):
+
+```
+UMD_INIT: DONE EARLYBOOT SETUP / ****** DONE UMD_INIT ****
+com.apple.xpc.launchd[00:10:13] (dirs_cleaner) <Notice>: Doing boot task
+dc_reset: /tmp: Invalid argument
+dc_reset: /var/run: Invalid argument
+com.apple.xpc.launchd[00:10:13]: launchd logging initialized. name: com.apple.xpc.launchd pid: 1
+com.apple.xpc.launchd[00:10:13] (xpcroleaccountd) <Notice>: Doing boot task
+```
+
+then nothing. So `dirs_cleaner` completes (with `dc_reset` failing on /tmp and /var/run)
+and the boot stops inside the **`xpcroleaccountd` boot task**.
+
+The image's paths look right: `/tmp -> private/var/tmp` (relative symlink, 1777 target
+exists), `/private/var/run` and `/var/run` are real directories 0775 root:wheel. So the
+EINVAL is not a missing path - dc_reset does something HFS refuses. Worth checking next
+whether launchd needs `/tmp`-style resets to succeed before services can start (the same
+call may be what xpcroleaccountd then waits on).
+
+**Reminder of the two working waits and the two broken ones:** `tsleep` works (sampler
+samples prove it), `delay()` never returns. A busy spin in a kernel thread starves
+`cpus=1` and stalls the boot, so never spin for seconds in a kernel thread.
+
+Images worth keeping: `civi-l1.img` (reaches xpcroleaccountd), `civi-nosmp.img`
+(reaches dirs_cleaner), `civi-aks.img` (reaches mount-phase-1 and shows the
+dyld shared-cache "not in trust cache" flood).
+
+### >>> CIVI 2026-10-21 18:00: the boot now runs launchd boot tasks and stalls at dirs_cleaner <<<
+
+With the console filter on and the kernel-side spins off (`civi-nosmp.img`: all patches,
+`sweetlog=0`, `sweetsample=-`) the boot gets past the mount and through early userland:
+
+```
+UMD_INIT: setup kernel personas
+UMD_INIT: Failed to notify generation changed: Failed to register or darwin notification token
+UMD_INIT: DONE EARLYBOOT SETUP / ****** DONE UMD_INIT ****
+com.apple.xpc.launchd[00:00:10.987] (dirs_cleaner) <Notice>: Doing boot task
+```
+
+and then it sits there for 15+ minutes. `civi-aks.img` (no filter) shows the same stage as an
+endless `exec xpcproxy` stream, and `launchd` does log `exec mount` just before.
+
+So the remaining gate is the **dirs_cleaner boot task**, and the things worth trying next:
+1. Find out whether dirs_cleaner is walking the whole 180k-file volume. If it is I/O bound,
+   the HFS hardlink-bit repair is the prime suspect: the Linux-built image has hardlinks
+   without `kHFSHasLinkChainBit`, and the driver repairs them **in memory only**, so every
+   boot and every lookup pays again (patch 0041 only suppresses the log). The fix is either
+   to persist the repair in the catalog record or to build the image with the bit set.
+2. A real kernel timer would let the sampler run without starving the CPU, so its `SMP`
+   stacks could name exactly what dirs_cleaner waits in. `delay`/`tsleep` never wake
+   because `clock_absolutetime_interval_to_deadline`/timer callouts are misbehaving; the
+   FB vsync `IOTimerEventSource` does fire, so IOKit timers are the working path to copy.
+3. `/private/var` on a single-volume root: launchd's later tasks assume a data volume;
+   the sweet image works around this in the root image, not the kernel.
+
+### >>> CIVI 2026-10-21 17:15: kernel-side spinning starves the single-CPU boot <<<
+
+Decisive A/B on the *same* kernel (`0103`-`0116`): with `sweetsample=*` (sampler on) the
+boot never leaves `bsd_init: vfs_mountroot` and `PS kernel_task[0]` is the only process;
+with `sweetsample=-` (sampler off) and `sweetlog=0` the same kernel mounts the root and
+reaches `exec launchd_cache_loader` / `Cache sent to launchd successfully`.
+
+Cause: `tsleep` and `delay` never wake on this port, so every kernel helper that needs to
+wait was converted to a spin (`ufs_spin_us`, `sweet_sample_wait`, the log flush loop). A
+spinning kernel thread runs at kernel priority and, with `cpus=1`, starves the bootstrap
+thread badly enough to stall the mount. **Any future in-kernel waiter must not busy-spin
+for seconds**; either find a timer path that actually works (worth one experiment:
+`clock_deadline`/`thread_call` with `mach_absolute_time`), keep waits to a few
+milliseconds, or do the work from a path that already runs (e.g. flush the log from
+`ufs_strategy`).
+
+**Working image to continue from:** `civi-nosmp.img` (all patches, `sweetlog=0`,
+`sweetsample=-`) reaches launchd; `civi-aks.img` (0102) reaches `mount-phase-1` and shows
+the dyld shared-cache "not in trust cache" flood. Neither presents a frame yet.
+
+### >>> CIVI 2026-10-21 17:10: launchd runs, mount-phase-1 stalls, trust-cache flood <<<
+
+**Measured with the restored process sampler** (`0114/0115/0116`, boot-arg
+`sweetsample=*`): on the newest kernels (`0103`+) the boot never creates a single user
+process - `PS kernel_task[0]` is the only line, three samples in a row, while the last
+kernel message is `bsd_init: vfs_mountroot`. So those builds stall in the mount.
+
+**The older image `civi-aks.img` (0102 vintage) does reach userland**, and its console now
+shows the real sequence:
+
+```
+shared_region: 0x... [1 (launchd)] map (0x...: 'dyld_shared_cache_arm64.23'): not in trust cache
+... (one line per cache chunk, .1 .. .42, plus .dylddata / .dyldlinkedit)
+SWEET Sandbox: launchd op 4
+com.apple.xpc.launchd[1970-01-01 00:00:09]: hello
+com.apple.xpc.launchd: Could not opt into 50 MB Jetsam high watermark: 22 (Invalid argument)
+com.apple.xpc.launchd: Darwin Bootstrapper Version 7.0.0 ... RELEASE_ARM64
+com.apple.xpc.launchd: boot-args = debug=0xc serial=3 cpus=1 ... (ours, verbatim)
+com.apple.xpc.launchd (system): entering ondemand mode / created
+com.apple.xpc.launchd (mount-phase-1): Doing boot task
+exec mount
+```
+
+So: **launchd runs, the boot-args are right, and the stall is the `mount` boot task**
+(mount-phase-1), not SpringBoard. The dyld shared cache mapping reports every chunk as
+"not in trust cache" - the AMFI stub (0015/0025/0035/0036) evidently does not cover the
+shared-region chunks; whether that is fatal is unknown, but it is the loudest thing on the
+console right before launchd starts.
+
+**Immediate next steps:**
+1. Find out what `/sbin/mount` waits on. The sampler is the tool: boot
+   `civi-aks.img` content with `sweetsample=mount,launchd` and read the `SMP` stacks -
+   that names the syscall/kernel path it is stuck in. (`0116` made the sampler able to
+   list processes; the same kernel can sample by name.)
+2. If it is the data-volume mount, give launchd's mount-phase-1 nothing to do (sweet's
+   single-volume root has no data volume; check its launchd.plist for a
+   mount-phase-1 override) or make `/sbin/mount` return immediately for the missing
+   volume.
+3. The trust-cache flood: check whether `sweet_amfi.c`'s trust-cache stub is asked about
+   the shared region chunks at all, or whether that message comes from dyld itself
+   (then it is cosmetic and can be ignored).
+
+**Tooling status:** the persistent log writer works but perturbs the boot (see 16:35 note);
+the sampler works and is the tool to keep, the process list mode makes a stalled boot
+self-describing.
+
+### >>> CIVI 2026-10-21 16:35: the persistent-log writer itself perturbs the boot <<<
+
+The log channel is proven end to end (writer + dump + paging), but its presence
+changes what the boot does: every image built **with** the writer (0103 onwards) stalls
+earlier (`keybag`, `exec mount`, `launchd_cache_loader`) than the ones built **without**
+it (`civi-aks.img`, `civi-filter.img`, which reach `exec SpringBoard`). The writer holds
+`sweet_ufs_lock` and issues SCSI writes every 200 ms while HFS is mounting and running,
+and after the mount its flushes stop landing: the on-disk header freezes at the first
+flush (7581 bytes / 144 lines, ending at `bsd_init: calling IOKitInitializeTime`), while
+the loop keeps retrying (`SWEET LOG: write failed ... retrying`) - the error text only
+ever reaches the RAM ring, never the disk, so it is invisible.
+
+**Conclusion for the next session: do not ship the log writer in debug images yet.**
+Either
+- pace it much slower (e.g. 5 s) and only flush when no HFS I/O is in flight, or
+- give the log its own UTRD slot / bounce buffer so it cannot collide with the
+  strategy path, or
+- drive the log from the `ufs_strategy` path itself (flush a few blocks after a read),
+  which needs no extra thread and no lock gymnastics.
+
+**Best non-log images to continue from:** `civi-aks.img` (SpringBoard exec, AKS 35/101,
+throttled present) and `civi-filter.img` (same plus the console line filter). The filter
+plus `sweetnull`/`sweetscan` boot-args is the tool that actually made userland visible;
+the persistent log is a nice-to-have that currently costs more than it gives.
+
+### >>> CIVI 2026-10-21 15:20: persistent log channel works, but only its first flush lands <<<
+
+**What works.** `0103` + `0106..0110` give a real log channel: every console character
+goes into a 4 MiB ring (`_cnputc` hook, 0108 - hooking `_cnputs` only captured 146 lines),
+a kernel thread flushes it to the last 4100 KiB of userdata (`0x1d32bfa` on this phone)
+with a SWEETLOG header, and `sweetlogdump=N` reads it back at boot and prints one page of
+60 lines on the panel, then spins so the page stays visible. Both were verified on the
+phone: `SWEET LOG: writer thread started`, `console log to the last 4100 KiB ...` and
+`=== SWEET LOG page 0: lines 85..145 of 146, 7581 bytes ===`.
+
+**The bug that is left.** The dump always reports **144-146 lines / 7581 bytes**, i.e. the
+header on disk still describes the *first* flush. The writer does keep cycling (a run with
+the 200 ms heartbeat showed 500+ `SWEET LOG: flush N total M` lines, so `total` was moving
+and the error path was not taken), yet neither the header's total/seq nor the ring data on
+disk seem to advance past that first 7.5 KiB - the dumped text always ends at
+`civi: IOKitInitializeTime` no matter which boot produced it. Next things to check:
+(a) print `total` in the heartbeat and compare it with what the next dump reports,
+(b) check whether `ufs_write_blocks()` returns 0 while silently not landing when
+`pos` wraps to the same blocks repeatedly - the loop recomputes `blk`/`n` from
+`pos % SWEET_LOG_SIZE` and can loop without advancing if `n` comes back 0,
+(c) the header write `ufs_write_blocks(base, 1)` happens right after the data loop with
+the same bounce buffer - verify it is not racing the HFS driver through the single UTRD
+slot (the log thread holds `sweet_ufs_lock`, but check the strategy path takes it too).
+
+**Do not lose the working parts:** the panel-side console filter (0101) plus the
+`sweetnull`/`sweetscan`/`sweetiolog` boot-args are what made userland visible at all, and
+the 0102 no-fade change is what proved the earlier "black screen" was our own power-off
+fade rather than a missing frame.
+
+**Where the port stands overall:** iOS 16.7.16 userland boots on the Civi (launchd, early
+boot exit, SpringBoard exec, FIPS POST, launchd boot tasks up to `keybag`/mount-phase-2),
+the root is a 20 GiB HFS+ image on `userdata` mounted read-write with journal replay, and
+UFS reads/writes are solid. The open wall is userland bring-up: keybagd stalls before its
+first AKS call and SpringBoard never reaches IOMobileFramebuffer, so no frame is ever
+presented. That is the same class of wall the sweet notes describe, and it needs the
+persistent log to be finished first.
+
+### >>> CIVI 2026-10-21 13:50: userland reaches launchd's keybag task and stalls there <<<
+
+**Latest observable state** (`civi-nofade.img`, kernel with 0087-0102):
+```
+FIPSPOST_USER [...] fipspost_post: all tests PASSED (189)
+com.apple.xpc.launchd[1970-01-01 00:05:27] (keybag) <Notice>: Doing boot task
+```
+i.e. **keybagd starts and its corecrypto FIPS self-test passes**, then nothing for 12+
+minutes and no `SWEET AKS:` line, so it never reaches the first AppleKeyStore call.
+Reference point: sweet's v3 image **passed the keybag task** and the next wall there was
+AMFI/launchd_cache_loader, so this is a regression against sweet rather than a known
+Civi hardware problem.
+
+**Console work that paid off today (all CI-built and booted):**
+- **0101 console line filter**: whole lines whose prefix is noise (`exec `, `ifnet_attach`,
+  `skip attaching`, `dlil_init`, `[System Event]`) are dropped before drawing; the panel
+  now shows boot progress and crash text instead of a wall of `exec xpcproxy`.
+- **0100/0102 display power**: 0100 implemented IOMFB selector 12 and faded the panel to
+  black on "off" - the panel then stayed black with no backlight, which looked exactly like
+  "no display". 0102 removes the fade; the selector still logs and marks the frame dirty.
+  With 0102 the console text comes back, so **the black screen was our own fade, not a
+  presented frame**.
+
+**Still the same wall: SpringBoard never presents.** No `SWEET FB: ... sel N` line has ever
+appeared for backboardd/SpringBoard on this port, so neither process reaches the
+IOMobileFramebuffer user client. SpringBoard blocks in
+`-[BKSSystemShellService _checkIn]` (a synchronous BSXPC call to backboardd) per the sweet
+sampler, so the question is what backboardd is doing.
+
+**The next real step is a log channel; the panel cannot answer this.**
+Recommended: regenerate **0047** (4 MiB console ring flushed to the last 1025 blocks of
+userdata - UFS writes work now) and add a **shim payload that reads those blocks back and
+prints the tail on the panel** (shim/ufs.c already has the read path the October probes
+used). Then the full previous-boot log is readable with one `fastboot boot`.
+Alternatives: 0072-0077 USB CDC-ECM live log (six patches of drift, DWC3 at 0x0a600000 is
+the same as sweet), or a kernel-side "print N lines of the msgbuf at boot" hack.
+
+**Useful boot-args discovered/used today:** `sweetnull=backboardd,SpringBoard` (print their
+/dev/null writes, 0048), `sweetscan=backboardd,SpringBoard` (heap strings on crash, 0051),
+`sweetiolog=backboardd` (IOKit lookups, 0049), `sweetfb_hz=10/30`, `sweetfb_noconsole=1`.
+Patches 0043/0044/0050/0051/0058/0059/0061/0064/0065/0068/0070/0071 are applied and working.
+
+**Image set (all in C:\\Users\\BUFF\\ios-civi\\):** `civi-spin.img` first image to reach
+SpringBoard; `civi-filter.img` filtered console; `civi-nofade.img` = current best
+(filter + no fade + AKS 35/101 + rw root + throttled present).
+Git: `colorXi/ios-topaz` main HEAD `e46d9b9`, CI builds `xnu-kernel-civi` on push.
+
+### >>> CIVI 2026-10-21 13:10: launchd reaches SpringBoard, but the daemons crash-loop <<<
+
+**State.** Every image after 0096 boots to `exec SpringBoard` and then the console
+fills with `exec xpcproxy` lines: launchd is alive and respawning services, SpringBoard
+never presents a frame, and no `SWEET FB: ... sel N` line ever appears, i.e. neither
+SpringBoard nor backboardd reaches the IOMobileFramebuffer API. This is the same wall the
+sweet notes describe ("no GPU -> no CoreAnimation renderer", NEXT WALL: CPU rendering),
+except that there we would expect backboardd to open AppleCLCD first.
+
+**Patches added for the display, and what they changed:**
+
+| patch | what | effect |
+|---|---|---|
+| **0097** | swap only records the frame; the vsync timer copies the latest dirty one every 60/sweetfb_hz ticks (0056, skipped) | big: the boot got from "exec SpringBoard, dead" to running launchd boot tasks (data-protection, obliteration, commit-boot-mode, mount-phase-2) |
+| **0098** | `rootrw=1` clears MNT_RDONLY on the root mount (0031, skipped) | root now mounts read-write |
+| **0099** | AKS selector 35 (aks_get_extended_device_state) answered like 17, 101 succeeds (0055, skipped) | no visible change |
+| **0100** | IOMFB selector 12 RequestPowerChange implemented (0079, skipped) | no visible change; nobody calls it yet |
+
+**Boot-args tried:** `sweetfb_noconsole=1`, `sweetfb_hz=10/30`, `sweetnull=backboardd,SpringBoard`,
+`sweetscan=backboardd,SpringBoard`, `sweetiolog=backboardd`. None produced a frame; the
+last one only showed that the console is saturated with `exec xpcproxy`.
+
+**What is still skipped and now known to matter (regenerate like 0093/0097):**
+`0034` (UFS DMA above 4G), `0047` (persistent console log), `0060/0062/0063` (keys, touch,
+battery - the Civi touch is a Synaptics TCM over SPI anyway, so a new driver is needed),
+`0069` (UFS faster), `0072-0077` (USB probe/device/ECM/live log), `0080` (CPU topology).
+`/root/xt` is a local replay of exactly the tree the CI builds (70 patches applied, same
+21 skipped) - regenerate against that tree, not against a vanilla checkout.
+
+**Next step recommended: restore a log channel before touching anything else.**
+The panel is not enough: 75 lines that the `exec` storm overwrites within seconds.
+Two options, both now unblocked because UFS writes work:
+1. **0047 persistent console log** (4 MiB ring in the last 1025 blocks of userdata) plus a
+   shim payload that reads those blocks back and prints them on the panel - the shim
+   already has the UFS read path that the October probes used.
+2. **0072-0077 USB live log** (CDC-ECM to 192.168.7.1:5140). Civi's DWC3 is at
+   0x0a600000, the same address as sweet, so the port is plausible but it is six patches
+   of drift plus QSCRATCH differences.
+Option 1 is the smaller, more certain job.
+
+**Also worth checking once there is a log:** whether backboardd is even spawned
+(`exec backboardd`), whether it crashes in
+`BSSystemContainerForCurrentProcessPathProvider libraryPath` (the sweet NSException,
+fixed there by creating /private/var/containers - we do create them), and whether the
+container/sandbox paths resolve for the `mobile` user.
+
+### >>> 🎉🎉🎉 CIVI 2026-10-21 12:20: iOS USERLAND IS RUNNING ON THE XIAOMI CIVI <<<
+
+**launchd runs, early boot exits, SpringBoard is exec'd.** Panel output from `civi-spin.img`:
+
+```
+EarlyBoot: Exiting Early Boot
+com.apple.xpc.launchd[1970-01-01 00:02:07] <Notice>: Doing boot task
+[Subsystem: Launchd] [Event: tzinit] Doing boot task
+exec FinishRestoreFromBackup / finish_demo_restore / sysstatuscheck / prng_seedctl
+exec Launchd_cache_loader
+Using unsecure cache: /System/Library/xpc/launchd.plist
+Cache sent to launchd successfully
+exec xpcproxy
+exec SpringBoard
+```
+
+There is no picture yet (SpringBoard never presents a frame) and the console goes
+quiet after the SpringBoard exec, which is what a finished launchd looks like.
+
+**What it took, in order (each item was a real blocker):**
+
+1. **A root filesystem that did not exist.** Built `/root/ios-vm/ios16-root-20H392.img`
+   (20 GiB journaled case-sensitive HFS+, 12 GiB used) with `tools/mkiosroot.sh` from the
+   three APFS volumes, then `img2simg` -> 12,145,521,988 B, flashed to the `userdata`
+   partition (`fastboot flash userdata`, 16 sparse chunks, 286 s). Android is gone.
+2. **WSL could not write HFS+.** Built the matching Microsoft kernel tree
+   (tag `linux-msft-wsl-6.18.54.1`) with `CONFIG_HFSPLUS_FS=m`, booted it through
+   `%USERPROFILE%\.wslconfig` (`kernel=C:\Users\BUFF\wslk\bzImage`), then `insmod`
+   `hfsplus.ko`. The stock WSL kernel refuses the module ("struct module size must
+   match") because `CONFIG_DEBUG_INFO_BTF*` differs between `/proc/config.gz` and a
+   regenerated `.config`; booting our own build removes the mismatch.
+3. **The framebuffer console wraps instead of scrolling**, so photos mixed the oldest
+   and newest lines and every "where did it stop" reading was wrong. Patch **0087**
+   clears the whole screen at each wrap: the panel now always shows the last 75 lines.
+4. **`bsd_init()` was silent.** Its 47 step markers exist behind `DEBUG_BSDINIT`, and the
+   0083 stage script never reaches the build. Patches **0088** (markers print) and the
+   key discovery that `kprintf` reaches the msgbuf but **not** the panel, so the markers
+   had to use `printf`.
+5. **Hang #1: `IOKitInitializeTime()`.** The markers stopped on
+   `bsd_init: calling IOKitInitializeTime`. That function's only blocking call is
+   `waitForService(resourceMatching("IORTC"))` with a 30 s deadline and this board has no
+   RTC. Patch **0089** skips the wait for SWEET (as BCM2837 already does) and prints on
+   both sides of `clock_initialize_calendar()`.
+6. **UFS root device.** With 0089 the kernel walks the whole of `bsd_init` (network
+   stack, `inittodr`, `setconf`), `IOFindBSDRoot` reaches `sweet_ufs_init`, the ADT node
+   is found, the host is taken over (`[6] ufs_take_over_host -> 0`), GPT is read and
+   `userdata` is found. Patches **0090/0091** added the markers that showed this.
+7. **Hang #2: `delay()` never returns on this port.** The panel stopped on
+   "letting the link settle" (patch 0095's delay) and earlier SCSI timeouts never fired
+   either, because every poll iteration called `delay(1)`. Patch **0096** replaces both
+   call sites with a `mach_absolute_time()` spin (`ufs_spin_us`). This also explains why
+   the first TEST UNIT READY sometimes "hung": it was the delay inside the retry loop.
+8. **EROFS on the journal.** The kernel printed `do_jnl_io: strategy err 0x1e` and the
+   binary still contained "MiB, read-only": patch **0030** does not apply to the Civi
+   copy of 0028 and the CI drops the whole patch silently. **0093** re-applies the write
+   path after 0092, and with `ufsrw=1` the journal now initialises and the root mounts
+   read-write (`WRITE(10)` and `SYNCHRONIZE CACHE` complete with ocs 0).
+
+**IMPORTANT, newly discovered: the CI silently skips 20 patches.** `git apply` is atomic,
+so one failed hunk drops the whole file. Currently skipped (from the job log):
+`0030, 0034, 0047, 0054, 0055, 0056, 0060, 0062, 0063, 0067, 0069, 0072-0077, 0080`
+(+ dxb's own TrustCache/iobuffermemd/skywalk/syntax_checker). That means the persisted
+console log (0047), the whole USB live-log stack (0072-0077), the CPU topology widening
+(0080) and the display policies (0056 throttled present, 0067 console mute, 0079 display
+power) are **not** in any Civi kernel so far. Every one of them needs regenerating
+against the current file contents, exactly like 0093 did.
+
+**Next, in order:**
+1. Regenerate **0056** (SweetFramebuffer throttled present) and **0079** (display power):
+   SpringBoard execs but never presents, and 0056 is the present path.
+2. Then 0067 (console mute after the display takes over) so the panel is not overwritten.
+3. Then the skipped USB stack 0072-0077 for a live log (no more photos), and 0047.
+
+**Artifacts:** `C:\Users\BUFF\ios-civi\civi-spin.img` is the image that reaches
+SpringBoard (v13 kernel + 0087-0096, `cpus=1`, `rd=ufsroot0 ufsrw=1 rootrw=1`).
+Git: `colorXi/ios-topaz` main, HEAD `58169f5`; CI runs build `xnu-kernel-civi` on every
+push to `xnu/patches-civi/**`.
+
+### >>> 🎯 CIVI 2026-10-21 09:30: iOS ROOT FILESYSTEM BUILT -- WSL NOW READS/WRITES HFS+ <<<
+
+**HFS+ in WSL, without a VM.** WSL2's kernel has no `hfsplus` but does have `CONFIG_MODULES=y` and no module signing, so the matching Microsoft tree (tag `linux-msft-wsl-6.18.54.1`, fetched from codeload) was built with `CONFIG_HFSPLUS_FS=m` and booted directly: `%USERPROFILE%\.wslconfig` has `[wsl2] kernel=C:\\Users\\BUFF\\wslk\\bzImage` (`wsl --shutdown` to apply). The *stock* kernel refuses the module with "struct module size must match ... built struct module size at run time": `/proc/config.gz` carries `CONFIG_DEBUG_INFO_BTF*` and seven other symbols that `make olddefconfig` drops, so `sizeof(struct module)` differs. Booting our own build removes the mismatch. After any WSL restart: `insmod /root/kbuild/src/fs/hfsplus/hfsplus.ko` (verified: mount rw, write, symlink, fsck).
+
+**Root image built (the thing that was missing).** `/root/ios-vm/ios16-root-20H392.img` -- 20 GiB case-sensitive journaled HFS+, **12 GiB used**, produced by `tools/mkiosroot.sh` straight from the three APFS volumes (`apfs-fuse`, `/root/work/ipswparts/{OS,SystemOS,AppOS}.dmg`): 7.72 GB OS (179,359 files) + 3.13 GB SystemOS cryptex + 0.01 GB AppOS, with the dyld shared cache hard-linked to `/System/Library/Caches/com.apple.dyld`. Copy rate ~50 MB/s, whole run ~6 min. `fsck.hfsplus -f -y` repaired the volume; `-n` still says "volume header needs minor repair (1,0)" -- Linux leaves the journal empty and XNU replays it (same as the sweet image). Volume attributes read back 0x80002100 = unmounted + journaled + not inconsistent.
+
+**Two post-steps `mkiosroot.sh` aborts on in this container** (it exits under `set -e` at the logd stores): `install -d -o 272` fails with "invalid user: '272'" because /etc/passwd has no uid 272 -- use `mkdir` + `chown 272:272` + `chmod`. After that `tools/sweet-root-tweaks.py` ran clean (containers/SystemGroup/Temp created, purplebuddy + springboard + migration prefs written, 7 `_PanicOnCrash` launchd jobs renamed) and `private/var/keybags/systembag.kb` was installed.
+
+**Sparse image:** `/root/ios-vm/ios16-root-20H392.simg` 12,145,521,988 B, sha256 `8ba482f31f1fafb61b340819c1ab682c3b31f4d78619bc6f33530a16649b02d2`; Windows copy at `C:\Users\BUFF\ios-civi\rootimg\`. Copy lesson: `cp` from WSL to `/mnt/c` dies at ~9.9 GB with "Cannot allocate memory" (9p); read it from Windows via `\\wsl.localhost\Ubuntu\root\ios-vm\...` instead (94 s for 12 GB).
+
+**Boot image:** `C:\Users\BUFF\ios-civi\civi-ios8.img`, 16,764,928 B, sha256 `a376bda50476243181fab209f96070af1c665771113930f98bc3b54d142420e5` = v13 kernel (0086 markers) + shim (payload moved to **0x2c000** after the current `_end`) + `shim/out/civi.adt` (12,696 B: `sweet-ufs` @0x01d84000, 8 cpus with `qcom,kryo|qcom,kryo470|ARM,v8`, `/product` from D22AP), cmdline `debug=0xc serial=3 cpus=8 keepsyms=1 -noprogress rd=ufsroot0 unentitled_ios_sim_launch=1 ignition_level=1 wdt_test=no_user_checkin ufsrw=1 rootrw=1 launchd_unsecure_cache=1 wdt=-1 sweetfb_hz=30`. Built with `KERNEL=/root/civi-kernel-v13/kernel.development.sweet bash repack.sh "<cmdline>" civi-ios8.img`.
+
+**Where it stands.** `fastboot boot civi-ios8.img` at 09:29 (RAM only, Android's userdata untouched) -> "Booting OKAY", phone then left both adb and fastboot, i.e. the shim handed over to XNU. **The last console line has not been read yet.** Expected on this run: `SWEET UFS: "userdata" on LUN 0: first block 0x..., N MiB` followed by an HFS+ mount panic, because userdata still holds Android's f2fs. Note this is also the **first hardware run that can reach `bsd_init`** -- the kperf/`ml_wait_max_cpus` fix (2026-10-20 09:20 note) was only ever verified in QEMU.
+
+**Next (in order):**
+1. read the screen (photo) -> confirm the `SWEET UFS` line appears;
+2. power-cycle back to Android (10 s power button; there is no working reset path, PSHOLD/IMEM are still topaz values);
+3. `fastboot flash userdata rootimg\ios16-root-20H392.simg` (wipes MIUI -- already agreed, backups in `backup/`);
+4. `fastboot boot civi-ios8.img` with `rd=ufsroot0 ufsrw=1 rootrw=1` and watch for launchd.
+
+**Note on flashing:** no MIUI fastboot ROM is on this PC, so restoring Android after step 3 needs a ~5 GB download. `ufsroot=<gpt-name>` can point the kernel at any GPT partition, but no other partition on this phone is large enough for the 12 GiB root.
+
 ### >>> 🎯🎯 CIVI 2026-10-20 09:20: HANG FOUND AND FIXED -- SweetCPU NEVER MATCHED, kperf WAITED FOREVER <<<
 
 **The full kernel log was dumped from the guest, so the console-ring ambiguity is over.** `struct msgbuf` is at VA `0xfffffe0007b72660` (`_msgbuf`), `msg_bufc` at `+16`; on the v13 kernel it is PA `0x181bf5d2c`, `msg_size=0x20000`, `msg_bufx=0x102f1`, `msg_bufr=0` -- the ring had **not wrapped**, so bytes `[0, 0x102f1)` are the whole log (701 lines, copied to `C:\Users\BUFF\ios-civi\civi-msgbuf.txt`). The true last line is:
