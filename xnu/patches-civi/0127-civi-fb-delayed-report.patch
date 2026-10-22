@@ -1,0 +1,70 @@
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -91,10 +91,33 @@
+ 	IOWorkLoop         *fWorkLoop;
+ 	IOTimerEventSource *fVsync;
+ 	thread_call_t  fTestCall;   /* civi: thread_call self test */
++	bool           fTestFired;  /* civi: thread_call self test fired */
++	thread_call_t  fReportCall;  /* civi: delayed report */
+ 	uint64_t            fVsyncCount;
+ 
+ 	static void vsyncFired(OSObject *owner, IOTimerEventSource *sender);
+ 
++	/* civi: probes that can read private state. */
++	static void timerTestFired(thread_call_param_t p0, thread_call_param_t p1)
++	{
++		AppleCLCD *fb = (AppleCLCD *)p0;
++		(void)p1;
++		if (fb != NULL) {
++			fb->fTestFired = true;
++		}
++		IOLog("SWEET FB: thread_call fired\n");
++	}
++	static void reportFired(thread_call_param_t p0, thread_call_param_t p1)
++	{
++		AppleCLCD *fb = (AppleCLCD *)p0;
++		(void)p1;
++		if (fb != NULL) {
++			IOLog("SWEET FB: report vsync=%llu test=%d blink=%d\n",
++			    (unsigned long long)fb->fVsyncCount, fb->fTestFired ? 1 : 0,
++			    fb->fBlink ? 1 : 0);
++		}
++	}
++
+ public:
+ 	uint64_t      fPhys;
+ 	uint32_t      fWidth, fHeight, fRowBytes;
+@@ -145,11 +168,6 @@
+ };
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebufferUserClient, IOUserClient);
+-static void
+-sweet_fb_timer_test(thread_call_param_t p0, thread_call_param_t p1)
+-{
+-	IOLog("SWEET FB: thread_call fired (p0 %p p1 %p)\n", p0, p1);
+-}
+ 
+ 
+ bool
+@@ -208,13 +226,20 @@
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 	/* civi: does thread_call fire at all on this port? */
+-	fTestCall = thread_call_allocate(&sweet_fb_timer_test, this);
++	fTestCall = thread_call_allocate(&AppleCLCD::timerTestFired, this);
+ 	if (fTestCall != NULL) {
+ 		AbsoluteTime dl;
+ 		clock_interval_to_deadline(2, kSecondScale, &dl);
+ 		IOLog("SWEET FB: timer test armed, enter %d\n",
+ 		    thread_call_enter_delayed(fTestCall, dl));
+ 	}
++	/* civi: report late, when the console has gone quiet, so it stays. */
++	fReportCall = thread_call_allocate(&AppleCLCD::reportFired, this);
++	if (fReportCall != NULL) {
++		AbsoluteTime rdl;
++		clock_interval_to_deadline(60, kSecondScale, &rdl);
++		thread_call_enter_delayed(fReportCall, rdl);
++	}
+ 
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+ 	setProperty("external", false);
